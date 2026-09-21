@@ -6,8 +6,10 @@ from app.models import Evidence, InvestigationContext, InvestigationRequest
 class ContextBuilder:
     def build(self, request: InvestigationRequest, investigation_id: str) -> InvestigationContext:
         evidence: list[Evidence] = []
+        def evidence_id() -> str:
+            return f"{investigation_id}:E-{len(evidence) + 1:03d}"
         evidence.append(Evidence(
-            id="E-001",
+            id=evidence_id(),
             source=request.source,
             type="finding_observation",
             finding=request.finding.title,
@@ -21,7 +23,7 @@ class ContextBuilder:
             if value is None:
                 continue
             evidence.append(Evidence(
-                id=f"E-{len(evidence) + 1:03d}",
+                id=evidence_id(),
                 source=request.source,
                 type=f"{request.finding.type}_observation",
                 finding=f"{key} observed: {value}",
@@ -38,5 +40,6 @@ class ContextBuilder:
             historical_alerts=request.context.historical_alerts,
             related_findings=request.context.related_findings,
             asset_inventory=request.context.asset_inventory,
+            scan_id=request.context.model_extra.get("scan_id") if request.context.model_extra else request.finding.evidence.get("scan_id"),
             evidence=evidence,
         )

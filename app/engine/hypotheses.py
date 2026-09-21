@@ -8,13 +8,18 @@ class HypothesisEngine:
     def generate(self, context: InvestigationContext, graph: EvidenceGraph) -> list[Hypothesis]:
         evidence_ids = [e.id for e in context.evidence]
         finding = context.primary_alert.finding
+        history_checked = any(e.type in {"historical_alert", "history_query"} for e in context.evidence)
+        intentionally_protected = any(
+            "intentional" in e.finding.lower() or e.metadata.get("intentional") is True
+            for e in context.evidence
+        )
         is_http = finding.type.lower() == "http" or "http" in finding.title.lower()
         if not is_http:
             return [Hypothesis(
                 id="H-001", title="Observed finding requires validation",
                 description="The supplied finding is real input but its operational significance is not established.",
                 supporting_evidence=evidence_ids[:1],
-                missing_evidence=["Expected asset state", "Historical activity"],
+                missing_evidence=[] if history_checked else ["Expected asset state", "Historical activity"],
                 confidence=0.35, status=HypothesisStatus.unresolved,
             )]
 
@@ -31,13 +36,14 @@ class HypothesisEngine:
                 description="The observed endpoint may provide an administrative interface.",
                 supporting_evidence=evidence_ids,
                 missing_evidence=["Authentication configuration", "Expected exposure status"],
-                confidence=0.5, status=HypothesisStatus.plausible,
+                confidence=0.2 if intentionally_protected else 0.5,
+                status=HypothesisStatus.plausible,
             ),
             Hypothesis(
                 id="H-003", title="Misconfigured access-control boundary",
                 description="The endpoint may not enforce the access boundary intended by its owner.",
                 supporting_evidence=evidence_ids,
-                missing_evidence=["Authentication configuration", "Historical access activity"],
+                missing_evidence=["Authentication configuration"] if history_checked else ["Authentication configuration", "Historical access activity"],
                 confidence=0.35, status=HypothesisStatus.unresolved,
             ),
         ]

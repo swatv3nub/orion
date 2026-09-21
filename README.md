@@ -4,29 +4,71 @@ Investigation Engine for SW4NIT LAB.
 
 ## Purpose
 
-ORION turns a normalized ThreatLens alert into a deterministic, evidence-driven analyst report. It does not scan targets, execute tools, or remediate systems.
+ORION consumes normalized ThreatLens alerts and produces deterministic, evidence-driven analyst reports. Stage 2 can query explicitly permitted existing data sources, but it does not launch scans or modify systems.
 
 ## Architecture
 
-Reconix discovers security observations. Reconix Cloud executes and normalizes scans as Finding Schema 1.0. ThreatLens ingests and correlates those findings. ORION receives the resulting alert and runs:
+Reconix performs reconnaissance. Reconix Cloud orchestrates bounded scans and exposes Finding Schema 1.0. ThreatLens ingests, normalizes, and correlates findings. ORION receives that context:
 
-`input validation -> context builder -> evidence graph -> hypothesis engine -> evidence evaluator -> analyst report`
+```text
+ThreatLens
+    |
+    v
+Context Builder
+    |
+    v
+Evidence Graph
+    |
+    v
+Hypothesis Engine
+    |
+    v
+Missing Evidence
+    |
+    v
+Investigation Planner
+    |
+    v
+Policy Engine
+    |
+    v
+Tool Registry
+    |---- ThreatLens Query
+    |---- Reconix Results
+    |---- MITRE Lookup
+    |
+    v
+New Evidence -> Evidence Graph -> Hypothesis Re-evaluation -> Analyst Report
+```
 
-Stage 1 is a deterministic evidence-analysis foundation. Autonomous investigation tools are intentionally not enabled.
+ArgusAgent is not part of ORION.
 
-## Stage 1 Components
+## Stage 1
 
-- **Context Builder:** converts supplied observations into provenance-preserving evidence.
-- **Evidence Graph:** an in-memory Python graph of alerts, assets, findings, and evidence.
-- **Hypothesis Engine:** deterministic HTTP and generic finding rules, capped at three hypotheses.
-- **Evidence Evaluator:** bounded heuristic confidence, missing evidence, uncertainty, and classification.
-- **Report Generator:** structured analyst output. Recommended steps are not executed.
+Stage 1 validates input, builds context and a provenance-preserving evidence graph, generates up to three deterministic hypotheses, evaluates uncertainty, and produces a structured report. Confidence values are heuristic decision-support values and are not statistically calibrated probabilities.
 
-Evidence distinguishes observed facts from interpretations and hypotheses. Unknown evidence is represented as missing, never invented. Confidence values are heuristic decision-support values and are not statistically calibrated probabilities.
+## Stage 2: Controlled Investigation
 
-## Relationships
+Stage 2 adds a deterministic missing-evidence analyzer, planner, policy engine, tool registry, and bounded executor. The executor can query only:
 
-ORION consumes ThreatLens context; it does not replace Reconix or Reconix Cloud. Reconix remains the reconnaissance system, Reconix Cloud remains the scan execution and Finding Schema 1.0 boundary, and ThreatLens remains the normalization and initial correlation layer. ArgusAgent is not part of ORION.
+- `threatlens.query`: retrieve one existing ThreatLens alert.
+- `reconix.results`: retrieve results for an existing Reconix Cloud scan.
+- `mitre.lookup`: look up an explicitly supplied MITRE technique in the small local catalog.
+
+These tools are read-only and operate only on explicitly permitted data sources. Tool results become provenance-preserving evidence, the graph is updated, and hypotheses are evaluated again. Missing evidence and a query returning no results are represented separately.
+
+Limits are enforced in code:
+
+- maximum 5 investigation steps
+- maximum 10 tool calls
+- maximum 60 seconds using a monotonic clock
+- bounded external responses
+
+The planner cannot create arbitrary tool names or URLs. The registry fails closed for unknown tools. Tool arguments are typed per tool. `automated_action` remains `none`.
+
+## Security Boundaries
+
+ORION does not execute arbitrary commands, arbitrary Python, arbitrary URLs, arbitrary scans, arbitrary Reconix arguments, brute force, exploits, remediation, or infrastructure changes. It has no generic HTTP tool, shell tool, scan-submission path, or public tool-execution endpoint. API keys come only from environment configuration and are never returned in tool activity.
 
 ## API
 
@@ -35,7 +77,7 @@ ORION consumes ThreatLens context; it does not replace Reconix or Reconix Cloud.
 - `GET /v1/investigations/{investigation_id}`
 - `GET /v1/investigations/{investigation_id}/report`
 
-Example:
+Submit the safe sample:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/investigations \
@@ -43,11 +85,23 @@ curl -X POST http://127.0.0.1:8000/v1/investigations \
   --data @examples/sample_alert.json
 ```
 
-The response contains an investigation ID, `completed` status, and a classification. The report endpoint returns evidence, hypotheses, missing evidence, uncertainty, and `automated_action: "none"`.
+The report contains evidence, hypotheses, missing evidence, tool activity, state, stop reason, uncertainty, and `automated_action: "none"`.
 
-## Security Boundaries
+## Configuration
 
-Stage 1 only reasons over supplied data. It cannot execute shell commands or arbitrary code, fetch URLs, scan targets, launch Reconix, access networks, exploit systems, modify infrastructure, or perform remediation. No external service or secret is required.
+Copy `.env.example` to a local environment file and provide only explicitly configured integration values:
+
+```text
+MAX_INVESTIGATION_STEPS=5
+MAX_TOOL_CALLS=10
+MAX_RUNTIME_SECONDS=60
+THREATLENS_BASE_URL=http://localhost:8000
+THREATLENS_API_KEY=
+RECONIX_CLOUD_BASE_URL=http://localhost:8080
+RECONIX_CLOUD_API_KEY=
+```
+
+Values cannot bypass the hard safety ceilings. Empty integration URLs cause controlled tool denial rather than arbitrary network access.
 
 ## Local Development
 
@@ -64,15 +118,17 @@ pytest -q
 python -m compileall app
 ```
 
+Tests use deterministic mock tools and do not require ThreatLens, Reconix Cloud, MITRE network access, API keys, or internet access.
+
 ## Docker
 
 ```bash
-docker build -t orion:stage1 .
-docker run --rm -p 127.0.0.1:8100:8000 orion:stage1
+docker build -t orion:stage2 .
+docker run --rm -p 127.0.0.1:8100:8000 orion:stage2
 ```
 
-The image uses one Uvicorn worker and runs as a non-root user. Put Nginx or another controlled gateway in front of it for deployment.
+The image uses Python 3.12 slim, one Uvicorn worker, and a non-root user. Put Nginx or another controlled gateway in front of it for deployment.
 
 ## Current Limitations and Future Stages
 
-Stage 1 uses process-local in-memory storage, so results disappear on restart and are not shared between workers. Confidence is heuristic. The graph and pipeline are ready for future controlled planning and policy boundaries, but Stage 2 tools, autonomous loops, external integrations, and persistence are not implemented.
+Storage remains process-local and in memory, so results disappear on restart and are not shared between workers. The MITRE catalog is intentionally small and only contains techniques explicitly included in that local mapping. External adapters are read-only and require their services to be separately configured. Stage 3 functionality, autonomous agents, broad knowledge retrieval, and remediation are not implemented.

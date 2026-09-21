@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from app.engine.graph import EvidenceGraph
-from app.models import AnalystReport, Evaluation, Hypothesis, InvestigationContext
+from app.models import AnalystReport, Evaluation, Hypothesis, InvestigationContext, InvestigationState, ToolActivity
 
 
 class ReportGenerator:
     def generate(self, context: InvestigationContext, graph: EvidenceGraph,
-                 hypotheses: list[Hypothesis], evaluation: Evaluation) -> AnalystReport:
+                 hypotheses: list[Hypothesis], evaluation: Evaluation,
+                 activities: list[ToolActivity] | None = None,
+                 state: InvestigationState | None = None) -> AnalystReport:
         title = context.primary_alert.finding.title
         return AnalystReport(
             investigation_id=context.investigation_id,
@@ -28,4 +30,7 @@ class ReportGenerator:
             uncertainties=evaluation.uncertainties,
             human_review_required=evaluation.needs_investigation,
             automated_action="none",
+            tool_activity=activities or [],
+            stop_reason=state.stop_reason if state else None,
+            state=state,
         )
