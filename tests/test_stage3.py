@@ -35,7 +35,7 @@ class FakeResponse:
 
 
 class FakeConnection:
-    response = FakeResponse(200, json.dumps(FIXTURE).encode())
+    response = FakeResponse(200, json.dumps({"alert": FIXTURE}).encode())
     error: Exception | None = None
     requested_path = ""
 
@@ -55,7 +55,7 @@ class FakeConnection:
 
 
 def client(monkeypatch, response: FakeResponse | None = None) -> ThreatLensClient:
-    FakeConnection.response = response or FakeResponse(200, json.dumps(FIXTURE).encode())
+    FakeConnection.response = response or FakeResponse(200, json.dumps({"alert": FIXTURE}).encode())
     FakeConnection.error = None
     monkeypatch.setattr(threatlens_module.http.client, "HTTPConnection", FakeConnection)
     return ThreatLensClient(Settings(threatlens_base_url="http://threatlens.test", threatlens_api_key="secret"))
@@ -79,7 +79,18 @@ def test_threatlens_authentication_failure_is_safe(monkeypatch):
 
 def test_threatlens_malformed_response_is_rejected(monkeypatch):
     with pytest.raises(ThreatLensMalformedResponseError):
-        client(monkeypatch, FakeResponse(200, b'{"id":"missing-severity"}')).fetch_alert("finding_demo_001")
+        client(monkeypatch, FakeResponse(200, b'{"id":"missing-alert-envelope"}')).fetch_alert("finding_demo_001")
+
+
+def test_threatlens_missing_alert_object_is_rejected(monkeypatch):
+    with pytest.raises(ThreatLensMalformedResponseError):
+        client(monkeypatch, FakeResponse(200, b'{"alert":null}')).fetch_alert("finding_demo_001")
+
+
+def test_threatlens_identifier_mismatch_is_rejected(monkeypatch):
+    mismatched = {**FIXTURE, "id": "different_alert"}
+    with pytest.raises(ThreatLensMalformedResponseError):
+        client(monkeypatch, FakeResponse(200, json.dumps({"alert": mismatched}).encode())).fetch_alert("finding_demo_001")
 
 
 def test_threatlens_timeout_is_typed(monkeypatch):

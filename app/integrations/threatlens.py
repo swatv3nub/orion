@@ -95,7 +95,11 @@ class ThreatLensClient:
                 raise ThreatLensMalformedResponseError("response exceeds size limit")
             try:
                 payload = json.loads(body)
-                result = ThreatLensAlertResponse.model_validate(payload)
+                if not isinstance(payload, dict) or not isinstance(payload.get("alert"), dict):
+                    raise ThreatLensMalformedResponseError()
+                result = ThreatLensAlertResponse.model_validate(payload["alert"])
+            except ThreatLensMalformedResponseError:
+                raise
             except (json.JSONDecodeError, ValidationError, TypeError):
                 raise ThreatLensMalformedResponseError() from None
             if result.identifier != alert_id:
