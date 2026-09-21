@@ -1,0 +1,24 @@
+{
+  "id": "finding_demo_001",
+  "source": "reconix_cloud",
+  "timestamp": "2026-09-21T10:00:00Z",
+  "severity": "informational",
+  "category": "http",
+  "raw_event": {
+    "title": "Administrative endpoint observed",
+    "status": 401,
+    "url": "https://example.com/admin",
+    "port": 443,
+    "protocol": "https",
+    "mitre_attack": ["T1071.001"]
+  },
+  "metadata": {
+    "scan_id": "scan_demo_001",
+    "finding_id": "finding_demo_001",
+    "schema_version": "1.0",
+    "reconix_source": "reconix",
+    "scan_target": "example.com",
+    "hostname": "example.com",
+    "ip": "93.184.216.34"
+  }
+}

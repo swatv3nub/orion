@@ -3,6 +3,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 from app.config import Settings
+from app.integrations.threatlens import ThreatLensClient, ThreatLensAlertResponse
 from app.engine.context import ContextBuilder
 from app.engine.evaluator import EvidenceEvaluator
 from app.engine.graph import build_graph
@@ -17,9 +18,10 @@ from app.tools.registry import ToolRegistry
 
 
 class InvestigationService:
-    def __init__(self, settings: Settings | None = None, registry: ToolRegistry | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, registry: ToolRegistry | None = None, threatlens_client: ThreatLensClient | None = None) -> None:
         settings = settings or Settings.from_env()
         registry = registry or ToolRegistry(settings)
+        self.threatlens_client = threatlens_client or ThreatLensClient(settings)
         self.context_builder = ContextBuilder()
         self.hypothesis_engine = HypothesisEngine()
         self.evaluator = EvidenceEvaluator()
@@ -49,6 +51,10 @@ class InvestigationService:
         report = self.report_generator.generate(context, graph, hypotheses, evaluation, activities, state)
         self.reports[investigation_id] = report
         return report
+
+    def investigate_alert(self, alert_id: str) -> AnalystReport:
+        alert: ThreatLensAlertResponse = self.threatlens_client.fetch_alert(alert_id)
+        return self.investigate(self.threatlens_client.to_investigation_request(alert))
 
     def get(self, investigation_id: str) -> AnalystReport | None:
         return self.reports.get(investigation_id)

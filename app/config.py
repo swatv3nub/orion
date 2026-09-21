@@ -17,6 +17,10 @@ class Settings:
     threatlens_api_key: str = ""
     reconix_cloud_base_url: str = ""
     reconix_cloud_api_key: str = ""
+    threatlens_connect_timeout_seconds: float = 5.0
+    threatlens_read_timeout_seconds: float = 15.0
+    reconix_connect_timeout_seconds: float = 5.0
+    reconix_read_timeout_seconds: float = 30.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -28,6 +32,10 @@ class Settings:
             threatlens_api_key=os.getenv("THREATLENS_API_KEY", ""),
             reconix_cloud_base_url=os.getenv("RECONIX_CLOUD_BASE_URL", "").rstrip("/"),
             reconix_cloud_api_key=os.getenv("RECONIX_CLOUD_API_KEY", ""),
+            threatlens_connect_timeout_seconds=max(_number("THREATLENS_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
+            threatlens_read_timeout_seconds=max(_number("THREATLENS_READ_TIMEOUT_SECONDS", 15.0), 0.1),
+            reconix_connect_timeout_seconds=max(_number("RECONIX_CLOUD_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
+            reconix_read_timeout_seconds=max(_number("RECONIX_CLOUD_READ_TIMEOUT_SECONDS", 30.0), 0.1),
         )
 
 

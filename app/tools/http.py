@@ -22,13 +22,15 @@ class NoRedirect:
         return None
 
 
-def query_json(tool: str, base_url: str, path: str, api_key: str) -> ToolResult:
+def query_json(tool: str, base_url: str, path: str, api_key: str, connect_timeout: float = 5.0, read_timeout: float = 15.0) -> ToolResult:
     if not base_url:
         return safe_error(tool, "denied", "Integration is not configured")
     started = time.monotonic()
     try:
         request = Request(f"{base_url}{path}", headers={"Accept": "application/json", **({"Authorization": f"Bearer {api_key}"} if api_key else {})})
-        with build_opener(NoRedirect()).open(request, timeout=5) as response:
+        with build_opener(NoRedirect()).open(request, timeout=connect_timeout) as response:
+            if response.fp is not None and hasattr(response.fp, "raw") and hasattr(response.fp.raw, "_sock"):
+                response.fp.raw._sock.settimeout(read_timeout)
             payload = response.read(MAX_RESPONSE_BYTES + 1)
             if len(payload) > MAX_RESPONSE_BYTES:
                 return safe_error(tool, "error", "Tool response exceeded size limit")

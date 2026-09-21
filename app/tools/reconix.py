@@ -21,7 +21,10 @@ class ReconixResultsTool(InvestigationTool):
         self.settings = settings
 
     def execute(self, request: ReconixResultsRequest) -> ToolResult:
-        result = query_json(self.name, self.settings.reconix_cloud_base_url, f"/api/v1/scans/{request.scan_id}/results", self.settings.reconix_cloud_api_key)
+        result = query_json(
+            self.name, self.settings.reconix_cloud_base_url, f"/api/v1/scans/{request.scan_id}/results", self.settings.reconix_cloud_api_key,
+            self.settings.reconix_connect_timeout_seconds, self.settings.reconix_read_timeout_seconds,
+        )
         if result.status == "success":
             result.evidence = [Evidence(
                 id="pending", source="reconix_cloud", type="scan_result",

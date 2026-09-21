@@ -15,7 +15,10 @@ class ThreatLensQueryTool(InvestigationTool):
         self.settings = settings
 
     def execute(self, request: ThreatLensQueryRequest) -> ToolResult:
-        result = query_json(self.name, self.settings.threatlens_base_url, f"/v1/alerts/{request.alert_id}", self.settings.threatlens_api_key)
+        result = query_json(
+            self.name, self.settings.threatlens_base_url, f"/v1/alerts/{request.alert_id}", self.settings.threatlens_api_key,
+            self.settings.threatlens_connect_timeout_seconds, self.settings.threatlens_read_timeout_seconds,
+        )
         if result.status == "success":
             result.evidence = [Evidence(
                 id="pending", source="threatlens", type="historical_alert",

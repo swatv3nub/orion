@@ -203,5 +203,6 @@ class AnalystReport(BaseModel):
 
 class InvestigationResponse(BaseModel):
     investigation_id: str
+    alert_id: str | None = None
     status: str = "completed"
     classification: Classification
