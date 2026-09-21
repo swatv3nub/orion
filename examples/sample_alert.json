@@ -1,0 +1,24 @@
+{
+  "alert_id": "finding_demo_001",
+  "source": "threatlens",
+  "timestamp": "2026-09-21T10:00:00Z",
+  "asset": {
+    "hostname": "example.com",
+    "ip": "93.184.216.34",
+    "url": "https://example.com"
+  },
+  "finding": {
+    "type": "http",
+    "title": "Administrative endpoint observed",
+    "severity": "medium",
+    "evidence": {
+      "status": 401,
+      "url": "https://example.com/admin"
+    }
+  },
+  "context": {
+    "historical_alerts": [],
+    "related_findings": [],
+    "asset_inventory": null
+  }
+}
