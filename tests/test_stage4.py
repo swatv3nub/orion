@@ -4,7 +4,7 @@ from app.engine.evaluator import EvidenceEvaluator
 from app.engine.graph import build_graph
 from app.engine.hypotheses import HypothesisEngine
 from app.engine.report import ReportGenerator
-from app.models import Evidence, InvestigationContext, InvestigationRequest
+from app.models import CorrelationResult, Evidence, EvidenceRelation, InvestigationContext, InvestigationRequest
 
 from tests.test_stage1 import ALERT
 
@@ -174,3 +174,47 @@ def test_duplicate_scan_expansion_does_not_add_corroboration():
     result = EvidenceCorrelator().correlate(value, build_graph(value))
     assert len(result.unique_evidence_ids) == 1
     assert sum(item.relationship_type == "corroborates" for item in result.relationships) == 1
+
+
+def corroboration(left, right):
+    return EvidenceRelation(source_evidence_id=left, target_evidence_id=right, relationship_type="corroborates", confidence=0.9, rationale="independent representations")
+
+
+def test_unrelated_cloud_corroboration_does_not_increase_web_confidence():
+    confidence = HypothesisEngine()._confidence(
+        0.3, ["web-port"], [], [], CorrelationResult(relationships=[corroboration("cloud-a", "cloud-b")]),
+        relevant_evidence=["web-port"],
+    )
+    assert confidence == 0.38
+
+
+def test_port_corroboration_adds_one_web_confidence_bonus():
+    confidence = HypothesisEngine()._confidence(
+        0.3, ["web-port"], [], [], CorrelationResult(relationships=[corroboration("web-port", "reconix-port")]),
+        relevant_evidence=["web-port"],
+    )
+    assert confidence == 0.46
+
+
+def test_cloud_corroboration_only_increases_cloud_confidence():
+    correlation = CorrelationResult(relationships=[corroboration("cloud-a", "cloud-b")])
+    engine = HypothesisEngine()
+    web = engine._confidence(0.3, ["web-port"], [], [], correlation, relevant_evidence=["web-port"])
+    cloud = engine._confidence(0.3, ["cloud-a"], [], [], correlation, "H-004", relevant_evidence=["cloud-a"])
+    assert web == 0.38
+    assert cloud == 0.46
+
+
+def test_no_corroboration_adds_no_bonus():
+    assert HypothesisEngine()._confidence(0.3, ["web-port"], [], [], CorrelationResult(), relevant_evidence=["web-port"]) == 0.38
+
+
+def test_multiple_relevant_corroborations_apply_one_bonus():
+    confidence = HypothesisEngine()._confidence(
+        0.3, ["web-port"], [], [], CorrelationResult(relationships=[
+            corroboration("web-port", "reconix-port"),
+            corroboration("web-port", "historical-port"),
+        ]),
+        relevant_evidence=["web-port"],
+    )
+    assert confidence == 0.46

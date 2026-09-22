@@ -27,7 +27,7 @@ class HypothesisEngine:
                 contextual_evidence=context_ids,
                 contradicting_evidence=self._contradictions(atomic, "H-001"),
                 missing_evidence=missing,
-                confidence=self._confidence(0.35, support, atomic, missing, correlation),
+                confidence=self._confidence(0.35, support, atomic, missing, correlation, relevant_evidence=support + context_ids),
                 status=HypothesisStatus.plausible,
             )]
             if "admin" in context.primary_alert.finding.title.lower():
@@ -50,7 +50,7 @@ class HypothesisEngine:
                 supporting_evidence=[item.id for item in cloud],
                 missing_evidence=missing,
                 contradicting_evidence=self._contradictions(atomic, "H-004"),
-                confidence=self._confidence(0.3, [item.id for item in cloud], atomic, missing, correlation, "H-004", support_cap=0.08),
+                confidence=self._confidence(0.3, [item.id for item in cloud], atomic, missing, correlation, "H-004", support_cap=0.08, relevant_evidence=[item.id for item in cloud]),
                 status=HypothesisStatus.unresolved,
             )]
         return [Hypothesis(
@@ -74,7 +74,7 @@ class HypothesisEngine:
             supporting_evidence=[item.id for item in cloud],
             missing_evidence=missing,
             contradicting_evidence=self._contradictions(evidence, "H-004"),
-            confidence=self._confidence(0.25, [item.id for item in cloud], evidence, missing, correlation, "H-004", support_cap=0.08),
+            confidence=self._confidence(0.25, [item.id for item in cloud], evidence, missing, correlation, "H-004", support_cap=0.08, relevant_evidence=[item.id for item in cloud]),
             status=HypothesisStatus.unresolved,
         )]
 
@@ -94,10 +94,15 @@ class HypothesisEngine:
     def _contradictions(self, evidence: list[Evidence], hypothesis: str) -> list[str]:
         return [item.id for item in evidence if item.metadata.get("contradicts") is True or isinstance(item.metadata.get("contradicts"), list) and hypothesis in item.metadata["contradicts"]]
 
-    def _confidence(self, base: float, support: list[str], evidence: list[Evidence], missing: list[str], correlation: CorrelationResult | None, hypothesis: str = "H-001", support_cap: float = 0.24) -> float:
+    def _confidence(self, base: float, support: list[str], evidence: list[Evidence], missing: list[str], correlation: CorrelationResult | None, hypothesis: str = "H-001", support_cap: float = 0.24, relevant_evidence: list[str] | None = None) -> float:
         contradictions = self._contradictions(evidence, hypothesis)
         value = base + min(support_cap, len(set(support)) * 0.08)
-        if correlation and any(item.relationship_type == "corroborates" for item in correlation.relationships):
+        relevant_ids = set(relevant_evidence or support)
+        if correlation and any(
+            item.relationship_type == "corroborates"
+            and {item.source_evidence_id, item.target_evidence_id} & relevant_ids
+            for item in correlation.relationships
+        ):
             value += 0.08
         value -= min(0.3, len(contradictions) * 0.15)
         value -= min(0.24, len(missing) * 0.06)
