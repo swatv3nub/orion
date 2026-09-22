@@ -5,6 +5,7 @@ from uuid import uuid4
 from app.config import Settings
 from app.integrations.threatlens import ThreatLensClient, ThreatLensAlertResponse
 from app.engine.context import ContextBuilder
+from app.engine.correlator import EvidenceCorrelator
 from app.engine.evaluator import EvidenceEvaluator
 from app.engine.graph import build_graph
 from app.engine.hypotheses import HypothesisEngine
@@ -23,6 +24,7 @@ class InvestigationService:
         registry = registry or ToolRegistry(settings)
         self.threatlens_client = threatlens_client or ThreatLensClient(settings)
         self.context_builder = ContextBuilder()
+        self.correlator = EvidenceCorrelator()
         self.hypothesis_engine = HypothesisEngine()
         self.evaluator = EvidenceEvaluator()
         self.missing_analyzer = MissingEvidenceAnalyzer()
@@ -41,14 +43,22 @@ class InvestigationService:
         missing = self.missing_analyzer.analyze(context, graph, hypotheses)
         plan = self.planner.plan(context, graph, hypotheses, missing)
         state, activities = self.executor.execute(context, graph, plan)
-        hypotheses = self.hypothesis_engine.generate(context, graph)
+        correlation = self.correlator.correlate(context, graph)
+        state.evidence_count = len(context.evidence)
+        hypotheses = self.hypothesis_engine.generate(context, graph, correlation)
         for hypothesis in hypotheses:
             graph.add_node(hypothesis.id, "hypothesis", hypothesis.model_dump(mode="json"))
+            for evidence_id in hypothesis.supporting_evidence + hypothesis.contextual_evidence:
+                graph.add_edge(hypothesis.id, evidence_id, "supported_by" if evidence_id in hypothesis.supporting_evidence else "contextualizes")
         evaluation = self.evaluator.evaluate(context, hypotheses)
-        evaluation.missing_evidence = [item.description for item in self.missing_analyzer.analyze(context, graph, hypotheses)]
+        missing_items = self.missing_analyzer.analyze(context, graph, hypotheses)
+        evaluation.missing_evidence = [item.description for item in missing_items]
+        insufficient = list(dict.fromkeys(item for hypothesis in hypotheses for item in hypothesis.missing_evidence))
+        if insufficient:
+            evaluation.uncertainties.append("Retrieved evidence is insufficient to establish: " + ", ".join(insufficient) + ".")
         if state.timeout:
             evaluation.uncertainties.append("Investigation was incomplete because the runtime limit was reached.")
-        report = self.report_generator.generate(context, graph, hypotheses, evaluation, activities, state)
+        report = self.report_generator.generate(context, graph, hypotheses, evaluation, activities, state, correlation)
         self.reports[investigation_id] = report
         return report
 

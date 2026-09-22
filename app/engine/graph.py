@@ -14,7 +14,9 @@ class EvidenceGraph:
         self.nodes[node_id] = {"id": node_id, "type": node_type, "data": data}
 
     def add_edge(self, source: str, target: str, relation: str = "related") -> None:
-        self.edges.append({"source": source, "target": target, "relation": relation})
+        edge = {"source": source, "target": target, "relation": relation}
+        if edge not in self.edges:
+            self.edges.append(edge)
 
     def get_node(self, node_id: str) -> dict[str, Any] | None:
         return self.nodes.get(node_id)

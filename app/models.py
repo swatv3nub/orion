@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -95,6 +95,39 @@ class Evidence(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+RelationshipType = Literal[
+    "same_asset",
+    "same_scan",
+    "same_finding",
+    "related_service",
+    "related_dns",
+    "related_tls",
+    "related_http",
+    "related_cloud",
+    "corroborates",
+    "contextualizes",
+]
+
+
+class EvidenceRelation(BaseModel):
+    source_evidence_id: str
+    target_evidence_id: str
+    relationship_type: RelationshipType
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str
+
+
+class CorrelationResult(BaseModel):
+    relationships: list[EvidenceRelation] = Field(default_factory=list)
+    unique_evidence_ids: list[str] = Field(default_factory=list)
+    duplicate_evidence_ids: list[str] = Field(default_factory=list)
+    duplicate_of: dict[str, str] = Field(default_factory=dict)
+
+    @property
+    def correlated_evidence_count(self) -> int:
+        return len(self.unique_evidence_ids)
+
+
 class InvestigationContext(BaseModel):
     investigation_id: str
     primary_alert: ThreatLensAlert
@@ -167,6 +200,7 @@ class Hypothesis(BaseModel):
     description: str
     supporting_evidence: list[str] = Field(default_factory=list)
     contradicting_evidence: list[str] = Field(default_factory=list)
+    contextual_evidence: list[str] = Field(default_factory=list)
     missing_evidence: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
     status: HypothesisStatus
@@ -189,6 +223,8 @@ class AnalystReport(BaseModel):
     summary: str
     hypotheses: list[Hypothesis]
     evidence: list[Evidence]
+    evidence_relationships: list[EvidenceRelation] = Field(default_factory=list)
+    correlated_evidence_count: int = Field(default=0, ge=0)
     missing_evidence: list[str]
     investigation_steps: list[str]
     tool_activity: list[ToolActivity] = Field(default_factory=list)

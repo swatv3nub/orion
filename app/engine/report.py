@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from app.engine.graph import EvidenceGraph
-from app.models import AnalystReport, Evaluation, Hypothesis, InvestigationContext, InvestigationState, ToolActivity
+from app.models import AnalystReport, CorrelationResult, Evaluation, Hypothesis, InvestigationContext, InvestigationState, ToolActivity
 
 
 class ReportGenerator:
     def generate(self, context: InvestigationContext, graph: EvidenceGraph,
-                 hypotheses: list[Hypothesis], evaluation: Evaluation,
-                 activities: list[ToolActivity] | None = None,
-                 state: InvestigationState | None = None) -> AnalystReport:
+                  hypotheses: list[Hypothesis], evaluation: Evaluation,
+                  activities: list[ToolActivity] | None = None,
+                  state: InvestigationState | None = None,
+                  correlation: CorrelationResult | None = None) -> AnalystReport:
         title = context.primary_alert.finding.title
         return AnalystReport(
             investigation_id=context.investigation_id,
@@ -16,9 +17,11 @@ class ReportGenerator:
             classification=evaluation.classification,
             severity=context.primary_alert.finding.severity,
             confidence=evaluation.confidence,
-            summary=f"{title} requires additional investigation because the available evidence does not establish whether the exposure is intentional.",
+            summary=hypotheses[0].description if hypotheses else f"{title} requires additional investigation.",
             hypotheses=hypotheses,
             evidence=context.evidence,
+            evidence_relationships=correlation.relationships if correlation else [],
+            correlated_evidence_count=correlation.correlated_evidence_count if correlation else len(context.evidence),
             missing_evidence=evaluation.missing_evidence,
             investigation_steps=[
                 "Verify whether the endpoint is intentionally public.",
