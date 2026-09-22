@@ -52,7 +52,7 @@ When a trusted `scan_id` is present, the existing read-only Reconix results tool
 
 ### Stage 5: LLM Analyst Assistance
 
-ORION optionally sends the already-collected investigation context to Groq for a structured analyst assessment. Groq is primary; one bounded retry is allowed for transient failures, then OpenRouter is attempted only for a transient provider failure. If both providers fail, ORION returns its deterministic report as `partial`.
+ORION optionally sends the already-collected investigation context to OpenRouter for a structured analyst assessment. OpenRouter is the default provider. Groq remains an optional primary provider with one bounded retry and OpenRouter fallback when `LLM_PROVIDER=groq`. If the selected provider fails, ORION returns its deterministic report as `partial`.
 
 The LLM cannot select or execute tools, create evidence, start scans, remediate findings, or alter deterministic evidence, hypotheses, correlations, or classification. Every factual LLM claim and hypothesis statement must reference ORION evidence IDs; unknown evidence or hypothesis IDs reject the assessment. Human review remains required when evidence is missing and `automated_action` is always `none`.
 
@@ -99,7 +99,7 @@ MAX_INVESTIGATION_STEPS=5
 MAX_TOOL_CALLS=10
 MAX_RUNTIME_SECONDS=60
 
-LLM_PROVIDER=groq
+LLM_PROVIDER=openrouter
 LLM_MAX_INPUT_BYTES=100000
 LLM_MAX_OUTPUT_TOKENS=2048
 

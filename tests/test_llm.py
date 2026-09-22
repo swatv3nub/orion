@@ -81,6 +81,14 @@ def test_groq_and_openrouter_return_the_same_structured_assessment():
         assert reasoner.client.called["response_format"]["json_schema"]["strict"]
 
 
+def test_openrouter_is_the_default_configured_provider(monkeypatch):
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+    settings = Settings.from_env()
+    assert settings.llm_provider == "openrouter"
+    assert settings.openrouter_model == "nvidia/nemotron-3-super-120b-a12b:free"
+
+
 @pytest.mark.parametrize("content", ["", "{}", "not json", '{"classification":"benign"}', "[]", None])
 def test_invalid_structured_responses_fail_closed(content):
     reasoner = GroqReasoner(Settings(groq_api_key="test"), FakeClient(raw_response(content)))
@@ -113,7 +121,7 @@ def test_input_limit_is_enforced_before_provider_request():
 
 def test_configured_openrouter_pinned_model_is_used_for_fallback():
     pinned = "nvidia/nemotron-3-super-120b-a12b:free"
-    reasoner = create_reasoner(Settings(groq_api_key="test", openrouter_api_key="test", openrouter_model=pinned))
+    reasoner = create_reasoner(Settings(llm_provider="groq", groq_api_key="test", openrouter_api_key="test", openrouter_model=pinned))
     assert isinstance(reasoner, FallbackReasoner)
     reasoner.primary.client = FakeClient(error=ProviderError(503))
     reasoner.fallback.client = FakeClient(response(assessment()))
@@ -155,7 +163,7 @@ def test_invalid_output_and_validation_failures_do_not_fallback():
 
 
 def test_invalid_groq_response_does_not_trigger_openrouter():
-    reasoner = create_reasoner(Settings(groq_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
+    reasoner = create_reasoner(Settings(llm_provider="groq", groq_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
     reasoner.primary.client = FakeClient(raw_response("{}"))
     reasoner.fallback.client = FakeClient(response(assessment()))
     with pytest.raises(LLMError) as error:
@@ -166,7 +174,7 @@ def test_invalid_groq_response_does_not_trigger_openrouter():
 
 
 def test_non_transient_primary_failure_does_not_call_openrouter():
-    reasoner = create_reasoner(Settings(groq_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
+    reasoner = create_reasoner(Settings(llm_provider="groq", groq_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
     reasoner.primary.client = FakeClient(error=ProviderError(400))
     reasoner.fallback.client = FakeClient(response(assessment()))
     with pytest.raises(LLMError) as error:

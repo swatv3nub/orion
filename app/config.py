@@ -21,7 +21,7 @@ class Settings:
     threatlens_read_timeout_seconds: float = 15.0
     reconix_connect_timeout_seconds: float = 5.0
     reconix_read_timeout_seconds: float = 30.0
-    llm_provider: str = "groq"
+    llm_provider: str = "openrouter"
     llm_max_input_bytes: int = 50_000
     llm_max_output_tokens: int = 2_048
     groq_api_key: str = ""
@@ -31,7 +31,7 @@ class Settings:
     groq_read_timeout_seconds: float = 30.0
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openrouter_model: str = ""
+    openrouter_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     openrouter_connect_timeout_seconds: float = 5.0
     openrouter_read_timeout_seconds: float = 30.0
 
@@ -49,7 +49,7 @@ class Settings:
             threatlens_read_timeout_seconds=max(_number("THREATLENS_READ_TIMEOUT_SECONDS", 15.0), 0.1),
             reconix_connect_timeout_seconds=max(_number("RECONIX_CLOUD_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
             reconix_read_timeout_seconds=max(_number("RECONIX_CLOUD_READ_TIMEOUT_SECONDS", 30.0), 0.1),
-            llm_provider=os.getenv("LLM_PROVIDER", "groq").lower(),
+            llm_provider=os.getenv("LLM_PROVIDER", "openrouter").lower(),
             llm_max_input_bytes=min(max(_integer("LLM_MAX_INPUT_BYTES", 50_000), 1_024), 1_000_000),
             llm_max_output_tokens=min(max(_integer("LLM_MAX_OUTPUT_TOKENS", 2_048), 128), 8_192),
             groq_api_key=os.getenv("GROQ_API_KEY", ""),
@@ -59,7 +59,7 @@ class Settings:
             groq_read_timeout_seconds=max(_number("GROQ_READ_TIMEOUT_SECONDS", 30.0), 0.1),
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
             openrouter_base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/"),
-            openrouter_model=os.getenv("OPENROUTER_MODEL", ""),
+            openrouter_model=os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free"),
             openrouter_connect_timeout_seconds=max(_number("OPENROUTER_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
             openrouter_read_timeout_seconds=max(_number("OPENROUTER_READ_TIMEOUT_SECONDS", 30.0), 0.1),
         )
