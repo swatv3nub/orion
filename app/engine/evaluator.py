@@ -6,6 +6,8 @@ from app.models import Classification, Evaluation, Hypothesis, InvestigationCont
 class EvidenceEvaluator:
     def evaluate(self, context: InvestigationContext, hypotheses: list[Hypothesis]) -> Evaluation:
         missing = list(dict.fromkeys(item for hypothesis in hypotheses for item in hypothesis.missing_evidence))
+        # Report confidence is aggregate conclusion certainty, not the confidence
+        # of any individual hypothesis; unresolved requirements lower it once.
         average = sum(h.confidence for h in hypotheses) / len(hypotheses) if hypotheses else 0.0
         contradictions = sum(len(h.contradicting_evidence) for h in hypotheses)
         confidence = max(0.0, min(1.0, average - min(0.3, len(missing) * 0.03) - min(0.4, contradictions * 0.1)))

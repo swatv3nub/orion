@@ -49,21 +49,22 @@ class EvidenceCorrelator:
             for finding in self._findings(scan.metadata):
                 category = self._category(finding)
                 detail = finding.get("evidence") if isinstance(finding.get("evidence"), dict) else finding
-                metadata = {"observation_type": category, "scan_id": self._scan_id(scan, finding), **detail}
-                metadata["finding_id"] = str(finding.get("id") or finding.get("finding_id") or scan.metadata.get("finding_id") or "")
-                asset = self._asset(metadata, context)
-                if asset:
-                    metadata["hostname"] = asset
-                additions.append(Evidence(
-                    id=f"{context.investigation_id}:E-{len(context.evidence) + len(additions) + 1:03d}",
-                    source=scan.source,
-                    type=f"reconix_{category}_observation",
-                    finding=self._text(category, metadata, asset),
-                    confidence=scan.confidence,
-                    raw_reference=scan.raw_reference,
-                    metadata=metadata,
-                    provenance=[{"source": scan.source, "scan_id": metadata["scan_id"], "finding_id": metadata["finding_id"]}],
-                ))
+                for observation in self._atomic_entries(category, detail):
+                    metadata = {"observation_type": category, "scan_id": self._scan_id(scan, finding), **observation}
+                    metadata["finding_id"] = str(finding.get("id") or finding.get("finding_id") or scan.metadata.get("finding_id") or "")
+                    asset = self._asset(metadata, context)
+                    if asset:
+                        metadata["hostname"] = asset
+                    additions.append(Evidence(
+                        id=f"{context.investigation_id}:E-{len(context.evidence) + len(additions) + 1:03d}",
+                        source=scan.source,
+                        type=f"reconix_{category}_observation",
+                        finding=self._text(category, metadata, asset),
+                        confidence=scan.confidence,
+                        raw_reference=scan.raw_reference,
+                        metadata=metadata,
+                        provenance=[{"source": scan.source, "scan_id": metadata["scan_id"], "finding_id": metadata["finding_id"]}],
+                    ))
         for item in additions:
             context.evidence.append(item)
             graph.add_node(item.id, "evidence", item.model_dump(mode="json"))
@@ -89,6 +90,15 @@ class EvidenceCorrelator:
         raw = str(finding.get("type") or metadata.get("category") or finding.get("category") or "").lower()
         return RECONIX_TYPES.get(raw, "observation")
 
+    def _atomic_entries(self, category: str, detail: dict[str, Any]) -> Iterable[dict[str, Any]]:
+        if category != "whois" or "field" in detail or "value" in detail:
+            yield detail
+            return
+        identity = {key: value for key, value in detail.items() if key in {"hostname", "domain", "url"}}
+        for field, value in detail.items():
+            if field not in identity and isinstance(value, (str, int, float)):
+                yield {**identity, "field": field, "value": value}
+
     def _deduplicate(self, evidence: list[Evidence], context: InvestigationContext) -> tuple[list[str], dict[str, str]]:
         canonical: list[str] = []
         duplicates: dict[str, str] = {}
@@ -109,6 +119,7 @@ class EvidenceCorrelator:
             if key in seen:
                 item.canonical_evidence_id = seen[key].id
                 item.provenance.append({"source": item.source, "raw_reference": item.raw_reference})
+                seen[key].provenance.extend(item.provenance)
                 duplicates[item.id] = seen[key].id
             else:
                 item.canonical_evidence_id = item.id
@@ -123,6 +134,8 @@ class EvidenceCorrelator:
         added: set[tuple[str, str, str]] = set()
 
         def add(left: str, right: str, kind: str, confidence: float, rationale: str) -> None:
+            if kind in {"same_asset", "related_service", "related_dns", "related_tls", "related_cloud", "corroborates", "contradicts"}:
+                left, right = sorted((left, right))
             key = (left, right, kind)
             if left != right and key not in added:
                 added.add(key)
@@ -132,10 +145,8 @@ class EvidenceCorrelator:
             left, right = by_id[primary], by_id[duplicate]
             if self._finding_id(left) and self._finding_id(left) == self._finding_id(right):
                 add(primary, duplicate, "same_finding", 1.0, "Both records preserve the same finding provenance.")
-            elif left.source != right.source:
+            if left.source != right.source:
                 add(primary, duplicate, "corroborates", 0.9, "Independent sources report the same atomic observation.")
-            else:
-                add(primary, duplicate, "same_source", 1.0, "Both records are duplicate representations from the same source.")
 
         groups: dict[str, list[Evidence]] = defaultdict(list)
         for evidence_id in canonical:
@@ -156,15 +167,19 @@ class EvidenceCorrelator:
             for left in categories["dns"]:
                 for right in items:
                     if right.id != left.id and self._evidence_category(right) in {"port", "http", "tls", "subdomain"}:
-                        add(left.id, right.id, "same_asset", 0.5, f"Both observations identify {asset}.")
                         add(left.id, right.id, "related_dns", 0.6, f"DNS and service observations resolve to {asset}.")
             for left in categories["tls"]:
                 for right in categories["http"] + categories["dns"] + categories["subdomain"]:
                     add(left.id, right.id, "related_tls", 0.7, f"TLS data is associated with {asset}.")
-            for left in categories["cloud"]:
-                for right in categories["cloud"]:
-                    if left.id < right.id:
-                        add(left.id, right.id, "related_cloud", 0.5, f"Cloud observations share {asset}.")
+        clouds: dict[str, list[Evidence]] = defaultdict(list)
+        for evidence_id in canonical:
+            item = by_id[evidence_id]
+            if self._evidence_category(item) == "cloud" and (family := self._cloud_family(item)):
+                clouds[family].append(item)
+        for family, items in clouds.items():
+            for index, left in enumerate(items):
+                for right in items[index + 1:]:
+                    add(left.id, right.id, "related_cloud", 0.5, f"Cloud resource names share the {family} family.")
         for item in evidence:
             targets = item.metadata.get("contradicts")
             if isinstance(targets, list):
@@ -189,8 +204,21 @@ class EvidenceCorrelator:
         return "observation"
 
     def _facts(self, category: str, data: dict[str, Any]) -> tuple[tuple[str, str], ...]:
-        keys = {"port": ("port",), "http": ("url", "status", "status_code"), "dns": ("record", "value", "ip", "address"), "tls": ("subject", "san", "certificate", "serial"), "subdomain": ("subdomain", "hostname", "name"), "cloud": ("url", "status", "status_code", "provider")}.get(category, ())
+        keys = {"port": ("port", "state"), "http": ("url", "status", "status_code"), "dns": ("record", "value", "ip", "address"), "tls": ("subject", "san", "certificate", "serial"), "subdomain": ("subdomain", "hostname", "name"), "cloud": ("url", "status", "status_code", "provider"), "whois": ("domain", "hostname", "field", "value")}.get(category, ())
         return tuple((key, str(data[key])) for key in keys if data.get(key) is not None)
+
+    def _cloud_family(self, item: Evidence) -> str | None:
+        url = item.metadata.get("url")
+        if not isinstance(url, str):
+            return None
+        host = urlsplit(url).hostname or ""
+        if ".s3." not in host:
+            return None
+        resource = host.split(".s3.", 1)[0].lower()
+        for suffix in ("-dev", "-test", "-backup", "-staging"):
+            if resource.endswith(suffix):
+                resource = resource.removesuffix(suffix)
+        return resource or None
 
     def _asset(self, data: dict[str, Any], context: InvestigationContext) -> str | None:
         for key in ("hostname", "host", "domain", "target", "scan_target", "url"):
