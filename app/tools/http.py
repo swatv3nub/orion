@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, build_opener
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from pydantic import BaseModel, Field
 
@@ -17,7 +17,7 @@ class ThreatLensQueryRequest(BaseModel):
     alert_id: str = Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9_.:-]+$")
 
 
-class NoRedirect:
+class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         return None
 
