@@ -240,6 +240,7 @@ class AnalystReport(BaseModel):
     llm_assessment: dict[str, Any] | None = None
     llm_status: str | None = None
     llm_model: str | None = None
+    llm_failure_reason: str | None = None
     missing_evidence: list[str]
     investigation_steps: list[str]
     tool_activity: list[ToolActivity] = Field(default_factory=list)

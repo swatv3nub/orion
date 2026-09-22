@@ -7,7 +7,9 @@ from app.models import Evidence, Hypothesis, ThreatLensAlert, ToolActivity
 
 
 class LLMError(Exception):
-    pass
+    def __init__(self, code: str, message: str | None = None) -> None:
+        self.code = code
+        super().__init__(message or code)
 
 
 class LLMReasoner(ABC):

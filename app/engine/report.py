@@ -12,7 +12,8 @@ class ReportGenerator:
                   correlation: CorrelationResult | None = None,
                   llm_assessment: dict | None = None,
                   llm_status: str | None = None,
-                  llm_model: str | None = None) -> AnalystReport:
+                  llm_model: str | None = None,
+                  llm_failure_reason: str | None = None) -> AnalystReport:
         title = context.primary_alert.finding.title
         return AnalystReport(
             investigation_id=context.investigation_id,
@@ -32,6 +33,7 @@ class ReportGenerator:
             llm_assessment=llm_assessment,
             llm_status=llm_status,
             llm_model=llm_model,
+            llm_failure_reason=llm_failure_reason,
             missing_evidence=evaluation.missing_evidence,
             investigation_steps=self._steps(evaluation.missing_evidence),
             mitre_attack=context.primary_alert.mitre_attack,
