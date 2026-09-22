@@ -21,6 +21,12 @@ class Settings:
     threatlens_read_timeout_seconds: float = 15.0
     reconix_connect_timeout_seconds: float = 5.0
     reconix_read_timeout_seconds: float = 30.0
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.1-pro-preview"
+    gemini_connect_timeout_seconds: float = 5.0
+    gemini_read_timeout_seconds: float = 30.0
+    gemini_max_input_bytes: int = 100_000
+    gemini_max_output_tokens: int = 2_048
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -36,6 +42,12 @@ class Settings:
             threatlens_read_timeout_seconds=max(_number("THREATLENS_READ_TIMEOUT_SECONDS", 15.0), 0.1),
             reconix_connect_timeout_seconds=max(_number("RECONIX_CLOUD_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
             reconix_read_timeout_seconds=max(_number("RECONIX_CLOUD_READ_TIMEOUT_SECONDS", 30.0), 0.1),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
+            gemini_connect_timeout_seconds=max(_number("GEMINI_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
+            gemini_read_timeout_seconds=max(_number("GEMINI_READ_TIMEOUT_SECONDS", 30.0), 0.1),
+            gemini_max_input_bytes=min(max(_integer("GEMINI_MAX_INPUT_BYTES", 100_000), 1_024), 1_000_000),
+            gemini_max_output_tokens=min(max(_integer("GEMINI_MAX_OUTPUT_TOKENS", 2_048), 128), 8_192),
         )
 
 

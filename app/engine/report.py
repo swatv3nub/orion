@@ -9,7 +9,10 @@ class ReportGenerator:
                   hypotheses: list[Hypothesis], evaluation: Evaluation,
                   activities: list[ToolActivity] | None = None,
                   state: InvestigationState | None = None,
-                  correlation: CorrelationResult | None = None) -> AnalystReport:
+                  correlation: CorrelationResult | None = None,
+                  llm_assessment: dict | None = None,
+                  llm_status: str | None = None,
+                  llm_model: str | None = None) -> AnalystReport:
         title = context.primary_alert.finding.title
         return AnalystReport(
             investigation_id=context.investigation_id,
@@ -26,6 +29,9 @@ class ReportGenerator:
             correlated_evidence_count=correlation.correlated_evidence_count if correlation else len(context.evidence),
             semantic_relationship_count=correlation.semantic_relationship_count if correlation else 0,
             provenance_relationship_count=correlation.provenance_relationship_count if correlation else 0,
+            llm_assessment=llm_assessment,
+            llm_status=llm_status,
+            llm_model=llm_model,
             missing_evidence=evaluation.missing_evidence,
             investigation_steps=self._steps(evaluation.missing_evidence),
             mitre_attack=context.primary_alert.mitre_attack,

@@ -237,6 +237,9 @@ class AnalystReport(BaseModel):
     correlated_evidence_count: int = Field(default=0, ge=0)
     semantic_relationship_count: int = Field(default=0, ge=0)
     provenance_relationship_count: int = Field(default=0, ge=0)
+    llm_assessment: dict[str, Any] | None = None
+    llm_status: str | None = None
+    llm_model: str | None = None
     missing_evidence: list[str]
     investigation_steps: list[str]
     tool_activity: list[ToolActivity] = Field(default_factory=list)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from uuid import uuid4
 
 from app.config import Settings
@@ -13,13 +14,16 @@ from app.engine.executor import InvestigationExecutor
 from app.engine.missing import MissingEvidenceAnalyzer
 from app.engine.planner import InvestigationPlanner
 from app.engine.report import ReportGenerator
+from app.llm import GeminiReasoner, LLMError, LLMReasoner
+from app.llm.schemas import validate_assessment
 from app.policy import PolicyEngine
 from app.models import AnalystReport, InvestigationRequest
 from app.tools.registry import ToolRegistry
 
+logger = logging.getLogger(__name__)
 
 class InvestigationService:
-    def __init__(self, settings: Settings | None = None, registry: ToolRegistry | None = None, threatlens_client: ThreatLensClient | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, registry: ToolRegistry | None = None, threatlens_client: ThreatLensClient | None = None, llm_reasoner: LLMReasoner | None = None) -> None:
         settings = settings or Settings.from_env()
         registry = registry or ToolRegistry(settings)
         self.threatlens_client = threatlens_client or ThreatLensClient(settings)
@@ -31,6 +35,8 @@ class InvestigationService:
         self.planner = InvestigationPlanner()
         self.executor = InvestigationExecutor(registry, PolicyEngine(settings, registry), settings)
         self.report_generator = ReportGenerator()
+        self.llm_reasoner = llm_reasoner or (GeminiReasoner(settings) if settings.gemini_api_key else None)
+        self.gemini_model = settings.gemini_model if self.llm_reasoner else None
         self.reports: dict[str, AnalystReport] = {}
 
     def investigate(self, request: InvestigationRequest) -> AnalystReport:
@@ -58,7 +64,24 @@ class InvestigationService:
             evaluation.uncertainties.append("Retrieved evidence is insufficient to establish: " + ", ".join(insufficient) + ".")
         if state.timeout:
             evaluation.uncertainties.append("Investigation was incomplete because the runtime limit was reached.")
-        report = self.report_generator.generate(context, graph, hypotheses, evaluation, activities, state, correlation)
+        assessment = None
+        llm_status = "not_configured" if self.llm_reasoner is None else "failed"
+        if self.llm_reasoner:
+            try:
+                assessment = self.llm_reasoner.analyze(context.primary_alert, context.evidence, hypotheses, evaluation.missing_evidence, activities)
+                validate_assessment(assessment, {item.id for item in context.evidence}, {item.id for item in hypotheses}, evaluation.missing_evidence)
+                llm_status = "success"
+                logger.info("Gemini assessment succeeded model=%s", self.gemini_model)
+            except Exception:
+                assessment = None
+                if not state.timeout:
+                    state.status, state.stop_reason = "partial", "llm_failure"
+                evaluation.uncertainties.append("LLM assessment was unavailable or failed validation; deterministic analysis was preserved.")
+                logger.warning("Gemini assessment failed model=%s", self.gemini_model)
+        report = self.report_generator.generate(
+            context, graph, hypotheses, evaluation, activities, state, correlation,
+            assessment.model_dump(mode="json") if assessment else None, llm_status, self.gemini_model,
+        )
         self.reports[investigation_id] = report
         return report
 
