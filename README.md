@@ -22,6 +22,7 @@ ThreatLens alert
     -> ThreatLens / Reconix results / MITRE
     -> New Evidence
     -> Hypothesis Re-evaluation
+    -> LLM Analyst Assessment (optional)
     -> Analyst Report
 ```
 
@@ -48,6 +49,12 @@ Limits are hard-bounded in code: 5 steps, 10 tool calls, and 60 seconds. Tool re
 Stage 3 adds a typed ThreatLens client and the `POST /v1/investigations/from-alert/{alert_id}` integration path. ORION fetches an existing configured ThreatLens alert, validates and adapts it to the existing Stage 1/2 input model, preserves Reconix metadata such as `scan_id` and `finding_id`, and invokes the existing `InvestigationService`.
 
 When a trusted `scan_id` is present, the existing read-only Reconix results tool can retrieve `/api/v1/scans/{scan_id}/results`. ORION never creates a scan or accepts a target from this endpoint.
+
+### Stage 5: LLM Analyst Assistance
+
+ORION optionally sends the already-collected investigation context to Groq for a structured analyst assessment. Groq is primary; one bounded retry is allowed for transient failures, then OpenRouter is attempted only for a transient provider failure. If both providers fail, ORION returns its deterministic report as `partial`.
+
+The LLM cannot select or execute tools, create evidence, start scans, remediate findings, or alter deterministic evidence, hypotheses, correlations, or classification. Every factual LLM claim and hypothesis statement must reference ORION evidence IDs; unknown evidence or hypothesis IDs reject the assessment. Human review remains required when evidence is missing and `automated_action` is always `none`.
 
 ## API
 
@@ -91,6 +98,18 @@ RECONIX_CLOUD_READ_TIMEOUT_SECONDS=30
 MAX_INVESTIGATION_STEPS=5
 MAX_TOOL_CALLS=10
 MAX_RUNTIME_SECONDS=60
+
+LLM_PROVIDER=groq
+LLM_MAX_INPUT_BYTES=100000
+LLM_MAX_OUTPUT_TOKENS=2048
+
+GROQ_API_KEY=
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=openai/gpt-oss-120b
+
+OPENROUTER_API_KEY=
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_MODEL=
 ```
 
 Integration base URLs come only from configuration. Responses are bounded, redirects are not followed, and API keys are never included in reports or errors. Empty integration URLs produce controlled tool failures.

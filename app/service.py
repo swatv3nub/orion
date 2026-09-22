@@ -14,7 +14,7 @@ from app.engine.executor import InvestigationExecutor
 from app.engine.missing import MissingEvidenceAnalyzer
 from app.engine.planner import InvestigationPlanner
 from app.engine.report import ReportGenerator
-from app.llm import GeminiReasoner, LLMError, LLMReasoner
+from app.llm import LLMError, LLMReasoner, create_reasoner
 from app.llm.schemas import validate_assessment
 from app.policy import PolicyEngine
 from app.models import AnalystReport, InvestigationRequest
@@ -35,8 +35,7 @@ class InvestigationService:
         self.planner = InvestigationPlanner()
         self.executor = InvestigationExecutor(registry, PolicyEngine(settings, registry), settings)
         self.report_generator = ReportGenerator()
-        self.llm_reasoner = llm_reasoner or (GeminiReasoner(settings) if settings.gemini_api_key else None)
-        self.gemini_model = settings.gemini_model if self.llm_reasoner else None
+        self.llm_reasoner = llm_reasoner or create_reasoner(settings)
         self.reports: dict[str, AnalystReport] = {}
 
     def investigate(self, request: InvestigationRequest) -> AnalystReport:
@@ -67,36 +66,49 @@ class InvestigationService:
         assessment = None
         llm_status = "not_configured" if self.llm_reasoner is None else "failed"
         llm_failure_reason = None
+        llm_provider = None
+        llm_model = None
+        llm_fallback_used = False
+        llm_primary_failure_reason = None
         if self.llm_reasoner:
             try:
                 assessment = self.llm_reasoner.analyze(context.primary_alert, context.evidence, hypotheses, evaluation.missing_evidence, activities)
                 validate_assessment(assessment, {item.id for item in context.evidence}, {item.id for item in hypotheses}, evaluation.missing_evidence)
                 llm_status = "success"
-                logger.info("Gemini assessment succeeded model=%s", self.gemini_model)
+                llm_provider = self.llm_reasoner.provider
+                llm_model = self.llm_reasoner.model
+                llm_fallback_used = self.llm_reasoner.fallback_used
+                llm_primary_failure_reason = self.llm_reasoner.primary_failure_reason
+                logger.info("LLM assessment succeeded provider=%s model=%s", llm_provider, llm_model)
             except LLMError as exc:
                 assessment = None
                 if not state.timeout:
                     state.status, state.stop_reason, state.error = "partial", exc.code, exc.code
                 evaluation.uncertainties.append("LLM assessment was unavailable or failed validation; deterministic analysis was preserved.")
                 llm_failure_reason = exc.code
-                logger.warning("Gemini assessment failed model=%s reason=%s", self.gemini_model, exc.code)
+                llm_provider = self.llm_reasoner.provider
+                llm_model = self.llm_reasoner.model
+                llm_fallback_used = self.llm_reasoner.fallback_used
+                llm_primary_failure_reason = self.llm_reasoner.primary_failure_reason
+                logger.warning("LLM assessment failed provider=%s model=%s reason=%s", llm_provider, llm_model, exc.code)
             except ValueError:
                 assessment = None
                 if not state.timeout:
                     state.status, state.stop_reason, state.error = "partial", "llm_validation_failed", "llm_validation_failed"
                 evaluation.uncertainties.append("LLM assessment was unavailable or failed validation; deterministic analysis was preserved.")
                 llm_failure_reason = "llm_validation_failed"
-                logger.warning("Gemini assessment failed model=%s reason=%s", self.gemini_model, llm_failure_reason)
+                logger.warning("LLM assessment failed reason=%s", llm_failure_reason)
             except Exception:
                 assessment = None
                 if not state.timeout:
                     state.status, state.stop_reason, state.error = "partial", "llm_error", "llm_error"
                 evaluation.uncertainties.append("LLM assessment was unavailable or failed validation; deterministic analysis was preserved.")
                 llm_failure_reason = "llm_error"
-                logger.warning("Gemini assessment failed model=%s reason=%s", self.gemini_model, llm_failure_reason)
+                logger.warning("LLM assessment failed reason=%s", llm_failure_reason)
         report = self.report_generator.generate(
             context, graph, hypotheses, evaluation, activities, state, correlation,
-            assessment.model_dump(mode="json") if assessment else None, llm_status, self.gemini_model, llm_failure_reason,
+            assessment.model_dump(mode="json") if assessment else None, llm_status, llm_model, llm_failure_reason,
+            llm_provider, llm_fallback_used, llm_primary_failure_reason,
         )
         self.reports[investigation_id] = report
         return report

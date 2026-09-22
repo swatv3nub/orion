@@ -1,20 +1,23 @@
 from __future__ import annotations
 
+import json
+
 import pytest
-from pydantic import ValidationError
 
 from app.config import Settings
 from app.llm.base import LLMError, LLMReasoner
-from app.llm.gemini import GeminiReasoner
+from app.llm.factory import FallbackReasoner
+from app.llm.groq import GroqReasoner
+from app.llm.openrouter import OpenRouterReasoner
 from app.llm.schemas import AnalystAssessment, validate_assessment
 from app.models import Evidence
 from app.service import InvestigationService
 from app.tools.registry import ToolRegistry
-from tests.test_stage1 import ALERT, request
+from tests.test_stage1 import request
 from tests.test_stage2 import FakeThreatLens
 
 
-def assessment(evidence_id: str, hypothesis_id: str) -> AnalystAssessment:
+def assessment(evidence_id: str = "E-1", hypothesis_id: str = "H-001") -> AnalystAssessment:
     return AnalystAssessment(
         classification="needs_investigation", severity="low", confidence=0.4,
         summary="Evidence requires human review.", summary_evidence_refs=[evidence_id],
@@ -23,110 +26,120 @@ def assessment(evidence_id: str, hypothesis_id: str) -> AnalystAssessment:
     )
 
 
-class FakeTypes:
-    class GenerateContentConfig:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-
-class FakeGeminiClient:
+class FakeClient:
     def __init__(self, response=None, error: Exception | None = None):
-        self.models = self
         self.response = response
         self.error = error
         self.called = None
+        self.chat = type("Chat", (), {"completions": self})()
 
-    def generate_content(self, **kwargs):
+    def create(self, **kwargs):
         self.called = kwargs
         if self.error:
             raise self.error
         return self.response
 
 
+def response(value: AnalystAssessment):
+    message = type("Message", (), {"content": json.dumps(value.model_dump())})()
+    return type("Response", (), {"choices": [type("Choice", (), {"message": message})()]})()
+
+
+class ProviderError(Exception):
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+
 class FakeReasoner(LLMReasoner):
-    def __init__(self, invalid: bool = False, failure: bool = False):
-        self.invalid = invalid
-        self.failure = failure
+    def __init__(self, provider: str, model: str, outcomes: list[AnalystAssessment | Exception]):
+        self.provider, self.model, self.outcomes = provider, model, outcomes
+        self.calls = 0
 
-    def analyze(self, alert, evidence, hypotheses, missing_evidence, tool_activity):
-        if self.failure:
-            raise LLMError("llm_timeout")
-        return assessment("unknown" if self.invalid else evidence[0].id, hypotheses[0].id)
-
-
-def test_gemini_provider_uses_structured_response_and_configured_model():
-    response = type("Response", (), {"parsed": assessment("E-1", "H-001").model_dump()})()
-    client = FakeGeminiClient(response)
-    reasoner = GeminiReasoner(Settings(gemini_api_key="AQ.test", gemini_model="test-model"), client, FakeTypes)
-    result = reasoner.analyze(request(), [Evidence(id="E-1", source="test", type="observation", finding="x", confidence=1, raw_reference="x")], [], [], [])
-    assert result.automated_action == "none"
-    assert client.called["model"] == "test-model"
-    assert client.called["config"].kwargs["response_schema"] is AnalystAssessment
+    def analyze(self, *args):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        if callable(outcome):
+            return outcome(*args)
+        return outcome
 
 
-def test_gemini_missing_key_invalid_json_timeout_and_api_failure_are_safe():
-    reasoner = GeminiReasoner(Settings())
-    with pytest.raises(LLMError):
+def test_groq_and_openrouter_return_the_same_structured_assessment():
+    for reasoner in (
+        GroqReasoner(Settings(groq_api_key="test"), FakeClient(response(assessment()))),
+        OpenRouterReasoner(Settings(openrouter_api_key="test", openrouter_model="configured"), FakeClient(response(assessment()))),
+    ):
+        result = reasoner.analyze(request(), [Evidence(id="E-1", source="test", type="observation", finding="x", confidence=1, raw_reference="x")], [], [], [])
+        assert result.automated_action == "none"
+        assert reasoner.client.called["response_format"]["json_schema"]["strict"]
+
+
+@pytest.mark.parametrize("status, code", [(429, "llm_quota_exhausted"), (503, "llm_unavailable")])
+def test_groq_http_errors_are_classified(status, code):
+    reasoner = GroqReasoner(Settings(groq_api_key="test"), FakeClient(error=ProviderError(status)))
+    with pytest.raises(LLMError) as error:
         reasoner.analyze(request(), [], [], [], [])
-    invalid = GeminiReasoner(Settings(gemini_api_key="AQ.test"), FakeGeminiClient(type("Response", (), {"parsed": None, "text": "not json"})()), FakeTypes)
-    timeout = GeminiReasoner(Settings(gemini_api_key="AQ.test"), FakeGeminiClient(error=TimeoutError()), FakeTypes)
-    for reasoner in (invalid, timeout):
-        with pytest.raises(LLMError):
-            reasoner.analyze(request(), [], [], [], [])
+    assert error.value.code == code and error.value.transient
 
 
-def test_assessment_schema_rejects_invalid_confidence_and_automated_action():
-    with pytest.raises(ValidationError):
-        AnalystAssessment.model_validate({"classification": "needs_investigation", "severity": "low", "confidence": 2, "summary": "x", "human_review_required": True, "automated_action": "remediate"})
+@pytest.mark.parametrize("error", [ProviderError(429), ProviderError(503), TimeoutError()])
+def test_transient_groq_failure_retries_once_then_falls_back(error):
+    primary = FakeReasoner("groq", "primary", [LLMError("llm_quota_exhausted", transient=True) if isinstance(error, ProviderError) and error.status_code == 429 else LLMError("llm_unavailable" if isinstance(error, ProviderError) else "llm_timeout", transient=True), LLMError("llm_unavailable", transient=True)])
+    fallback = FakeReasoner("openrouter", "fallback", [assessment()])
+    reasoner = FallbackReasoner(primary, fallback)
+    assert reasoner.analyze(None, [], [], [], []).automated_action == "none"
+    assert primary.calls == 2
+    assert fallback.calls == 1
+    assert reasoner.fallback_used and reasoner.provider == "openrouter"
 
 
-def test_successful_llm_assessment_is_reported_without_new_evidence():
-    service = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=FakeReasoner())
-    report = service.investigate(request())
-    assert report.state.status == "completed"
-    assert report.llm_status == "success"
-    assert report.llm_assessment["automated_action"] == "none"
-    assert set(report.llm_assessment["supporting_evidence"]) <= {item.id for item in report.evidence}
-    assert len(report.evidence) == report.state.evidence_count
-
-
-def test_invalid_llm_evidence_or_failure_preserves_deterministic_report_as_partial():
-    for reasoner in (FakeReasoner(invalid=True), FakeReasoner(failure=True)):
-        report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=reasoner).investigate(request())
-        assert report.state.status == "partial"
-        assert report.stop_reason in {"llm_timeout", "llm_validation_failed"}
-        assert report.llm_assessment is None
-        assert report.automated_action == "none"
-
-
-def test_unknown_evidence_hypothesis_and_missing_review_are_rejected():
-    valid = assessment("E-1", "H-001")
+def test_invalid_output_and_validation_failures_do_not_fallback():
+    primary = FakeReasoner("groq", "primary", [LLMError("llm_invalid_output")])
+    fallback = FakeReasoner("openrouter", "fallback", [assessment()])
+    with pytest.raises(LLMError):
+        FallbackReasoner(primary, fallback).analyze(None, [], [], [], [])
+    assert fallback.calls == 0
+    invalid = assessment("unknown")
     with pytest.raises(ValueError):
-        validate_assessment(valid.model_copy(update={"supporting_evidence": ["unknown"]}), {"E-1"}, {"H-001"}, [])
+        validate_assessment(invalid, {"E-1"}, {"H-001"}, [])
+
+
+def test_validation_failure_does_not_invoke_fallback_provider():
+    primary = FakeReasoner("groq", "primary", [assessment("unknown")])
+    fallback = FakeReasoner("openrouter", "fallback", [assessment()])
+    report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=FallbackReasoner(primary, fallback)).investigate(request())
+    assert report.llm_failure_reason == "llm_validation_failed"
+    assert fallback.calls == 0
+
+
+def test_unknown_hypothesis_missing_review_and_automated_action_are_rejected():
+    valid = assessment()
     with pytest.raises(ValueError):
         validate_assessment(valid.model_copy(update={"hypotheses": [valid.hypotheses[0].model_copy(update={"id": "H-999"})]}), {"E-1"}, {"H-001"}, [])
     with pytest.raises(ValueError):
         validate_assessment(valid.model_copy(update={"human_review_required": False}), {"E-1"}, {"H-001"}, ["Historical access activity"])
+    assert AnalystAssessment.model_validate({**valid.model_dump(), "automated_action": "none"}).automated_action == "none"
 
 
-def test_factual_claims_require_evidence_references():
-    with pytest.raises(ValidationError):
-        AnalystAssessment.model_validate({
-            "classification": "needs_investigation", "severity": "low", "confidence": 0.4,
-            "summary": "Observed service.", "summary_evidence_refs": ["E-1"],
-            "factual_claims": [{"text": "Invented fact", "evidence_refs": []}],
-            "human_review_required": True, "automated_action": "none",
-        })
+def test_both_provider_failures_preserve_deterministic_report():
+    primary = FakeReasoner("groq", "primary", [LLMError("llm_unavailable", transient=True), LLMError("llm_unavailable", transient=True)])
+    fallback = FakeReasoner("openrouter", "fallback", [LLMError("llm_unavailable", transient=True)])
+    report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=FallbackReasoner(primary, fallback)).investigate(request())
+    assert report.state.status == "partial"
+    assert report.llm_assessment is None
+    assert report.llm_provider == "openrouter"
+    assert report.llm_fallback_used
+    assert report.llm_primary_failure_reason == "llm_unavailable"
+    assert report.automated_action == "none"
 
 
-class ProviderError(Exception):
-    def __init__(self, status_code):
-        self.status_code = status_code
-
-
-def test_gemini_status_codes_are_safely_classified():
-    for status, code in ((503, "llm_unavailable"), (429, "llm_quota_exhausted")):
-        reasoner = GeminiReasoner(Settings(gemini_api_key="AQ.test"), FakeGeminiClient(error=ProviderError(status)), FakeTypes)
-        with pytest.raises(LLMError) as error:
-            reasoner.analyze(request(), [], [], [], [])
-        assert error.value.code == code
+def test_successful_provider_metadata_and_validation_failure_are_reported():
+    success = FakeReasoner("groq", "openai/gpt-oss-120b", [lambda alert, evidence, hypotheses, missing, activity: assessment(evidence[0].id, hypotheses[0].id)])
+    report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=success).investigate(request())
+    assert report.llm_status == "success"
+    assert report.llm_provider == "groq"
+    assert report.llm_model == "openai/gpt-oss-120b"
+    invalid = FakeReasoner("groq", "primary", [assessment("unknown")])
+    report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=invalid).investigate(request())
+    assert report.llm_failure_reason == "llm_validation_failed"

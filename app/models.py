@@ -241,6 +241,9 @@ class AnalystReport(BaseModel):
     llm_status: str | None = None
     llm_model: str | None = None
     llm_failure_reason: str | None = None
+    llm_provider: str | None = None
+    llm_fallback_used: bool = False
+    llm_primary_failure_reason: str | None = None
     missing_evidence: list[str]
     investigation_steps: list[str]
     tool_activity: list[ToolActivity] = Field(default_factory=list)

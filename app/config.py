@@ -21,12 +21,19 @@ class Settings:
     threatlens_read_timeout_seconds: float = 15.0
     reconix_connect_timeout_seconds: float = 5.0
     reconix_read_timeout_seconds: float = 30.0
-    gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.1-pro-preview"
-    gemini_connect_timeout_seconds: float = 5.0
-    gemini_read_timeout_seconds: float = 30.0
-    gemini_max_input_bytes: int = 100_000
-    gemini_max_output_tokens: int = 2_048
+    llm_provider: str = "groq"
+    llm_max_input_bytes: int = 100_000
+    llm_max_output_tokens: int = 2_048
+    groq_api_key: str = ""
+    groq_base_url: str = "https://api.groq.com/openai/v1"
+    groq_model: str = "openai/gpt-oss-120b"
+    groq_connect_timeout_seconds: float = 5.0
+    groq_read_timeout_seconds: float = 30.0
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = ""
+    openrouter_connect_timeout_seconds: float = 5.0
+    openrouter_read_timeout_seconds: float = 30.0
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -42,12 +49,19 @@ class Settings:
             threatlens_read_timeout_seconds=max(_number("THREATLENS_READ_TIMEOUT_SECONDS", 15.0), 0.1),
             reconix_connect_timeout_seconds=max(_number("RECONIX_CLOUD_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
             reconix_read_timeout_seconds=max(_number("RECONIX_CLOUD_READ_TIMEOUT_SECONDS", 30.0), 0.1),
-            gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.1-pro-preview"),
-            gemini_connect_timeout_seconds=max(_number("GEMINI_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
-            gemini_read_timeout_seconds=max(_number("GEMINI_READ_TIMEOUT_SECONDS", 30.0), 0.1),
-            gemini_max_input_bytes=min(max(_integer("GEMINI_MAX_INPUT_BYTES", 100_000), 1_024), 1_000_000),
-            gemini_max_output_tokens=min(max(_integer("GEMINI_MAX_OUTPUT_TOKENS", 2_048), 128), 8_192),
+            llm_provider=os.getenv("LLM_PROVIDER", "groq").lower(),
+            llm_max_input_bytes=min(max(_integer("LLM_MAX_INPUT_BYTES", 100_000), 1_024), 1_000_000),
+            llm_max_output_tokens=min(max(_integer("LLM_MAX_OUTPUT_TOKENS", 2_048), 128), 8_192),
+            groq_api_key=os.getenv("GROQ_API_KEY", ""),
+            groq_base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/"),
+            groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-120b"),
+            groq_connect_timeout_seconds=max(_number("GROQ_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
+            groq_read_timeout_seconds=max(_number("GROQ_READ_TIMEOUT_SECONDS", 30.0), 0.1),
+            openrouter_api_key=os.getenv("OPENROUTER_API_KEY", ""),
+            openrouter_base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/"),
+            openrouter_model=os.getenv("OPENROUTER_MODEL", ""),
+            openrouter_connect_timeout_seconds=max(_number("OPENROUTER_CONNECT_TIMEOUT_SECONDS", 5.0), 0.1),
+            openrouter_read_timeout_seconds=max(_number("OPENROUTER_READ_TIMEOUT_SECONDS", 30.0), 0.1),
         )
 
 
