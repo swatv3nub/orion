@@ -35,7 +35,7 @@ def test_context_evidence_is_provenanced_and_unknown_input_is_preserved():
     context = ContextBuilder().build(request(), "INV-test")
     assert context.evidence[0].raw_reference == ALERT["alert_id"]
     assert any("custom" in evidence.metadata for evidence in context.evidence)
-    assert context.evidence[1].confidence == 1.0
+    assert context.evidence[0].confidence == 1.0
 
 
 def test_evidence_confidence_is_bounded():

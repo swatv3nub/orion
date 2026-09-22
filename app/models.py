@@ -93,18 +93,22 @@ class Evidence(BaseModel):
     timestamp: datetime | None = None
     raw_reference: str
     metadata: dict[str, Any] = Field(default_factory=dict)
+    canonical_evidence_id: str | None = None
+    provenance: list[dict[str, str]] = Field(default_factory=list)
 
 
 RelationshipType = Literal[
     "same_asset",
     "same_scan",
     "same_finding",
+    "same_source",
     "related_service",
     "related_dns",
     "related_tls",
     "related_http",
     "related_cloud",
     "corroborates",
+    "contradicts",
     "contextualizes",
 ]
 
@@ -122,10 +126,14 @@ class CorrelationResult(BaseModel):
     unique_evidence_ids: list[str] = Field(default_factory=list)
     duplicate_evidence_ids: list[str] = Field(default_factory=list)
     duplicate_of: dict[str, str] = Field(default_factory=dict)
+    raw_evidence_count: int = 0
+    canonical_evidence_count: int = 0
+    semantic_relationship_count: int = 0
+    provenance_relationship_count: int = 0
 
     @property
     def correlated_evidence_count(self) -> int:
-        return len(self.unique_evidence_ids)
+        return self.canonical_evidence_count
 
 
 class InvestigationContext(BaseModel):
@@ -224,7 +232,11 @@ class AnalystReport(BaseModel):
     hypotheses: list[Hypothesis]
     evidence: list[Evidence]
     evidence_relationships: list[EvidenceRelation] = Field(default_factory=list)
+    raw_evidence_count: int = Field(default=0, ge=0)
+    canonical_evidence_count: int = Field(default=0, ge=0)
     correlated_evidence_count: int = Field(default=0, ge=0)
+    semantic_relationship_count: int = Field(default=0, ge=0)
+    provenance_relationship_count: int = Field(default=0, ge=0)
     missing_evidence: list[str]
     investigation_steps: list[str]
     tool_activity: list[ToolActivity] = Field(default_factory=list)

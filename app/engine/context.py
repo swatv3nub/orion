@@ -14,30 +14,20 @@ class ContextBuilder:
         }
         def evidence_id() -> str:
             return f"{investigation_id}:E-{len(evidence) + 1:03d}"
+        finding_data = dict(request.finding.evidence)
+        asset = request.asset.hostname if request.asset and request.asset.hostname else request.asset.ip if request.asset else None
+        if asset:
+            finding_data.setdefault("hostname", asset)
         evidence.append(Evidence(
             id=evidence_id(),
             source=request.source,
             type="finding_observation",
-            finding=request.finding.title,
+            finding=self._finding_text(request.finding.title, finding_data, asset),
             confidence=1.0,
             timestamp=request.timestamp,
             raw_reference=request.alert_id,
-            metadata={"finding_type": request.finding.type, "severity": request.finding.severity.value, **identifiers},
+            metadata={"observation_type": request.finding.type.lower(), "severity": request.finding.severity.value, **finding_data, **identifiers},
         ))
-
-        for key, value in request.finding.evidence.items():
-            if value is None:
-                continue
-            evidence.append(Evidence(
-                id=evidence_id(),
-                source=request.source,
-                type=f"{request.finding.type}_observation",
-                finding=f"{key} observed: {value}",
-                confidence=1.0,
-                timestamp=request.timestamp,
-                raw_reference=request.alert_id,
-                metadata={key: value},
-            ))
 
         return InvestigationContext(
             investigation_id=investigation_id,
@@ -61,3 +51,10 @@ class ContextBuilder:
         if isinstance(value, list):
             return [item for nested in value for item in self._values(nested, wanted)]
         return []
+
+    def _finding_text(self, title: str, evidence: dict[str, object], asset: str | None) -> str:
+        if "port" in evidence:
+            return f"{asset or 'Asset'} has port {evidence['port']} open"
+        if "status" in evidence and "url" in evidence:
+            return f"{evidence['url']} returned HTTP {evidence['status']}"
+        return title

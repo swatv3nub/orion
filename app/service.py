@@ -52,8 +52,8 @@ class InvestigationService:
                 graph.add_edge(hypothesis.id, evidence_id, "supported_by" if evidence_id in hypothesis.supporting_evidence else "contextualizes")
         evaluation = self.evaluator.evaluate(context, hypotheses)
         missing_items = self.missing_analyzer.analyze(context, graph, hypotheses)
-        evaluation.missing_evidence = [item.description for item in missing_items]
         insufficient = list(dict.fromkeys(item for hypothesis in hypotheses for item in hypothesis.missing_evidence))
+        evaluation.missing_evidence = list(dict.fromkeys([item.description for item in missing_items] + insufficient))
         if insufficient:
             evaluation.uncertainties.append("Retrieved evidence is insufficient to establish: " + ", ".join(insufficient) + ".")
         if state.timeout:

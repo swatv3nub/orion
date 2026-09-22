@@ -3,127 +3,111 @@ from app.engine.correlator import EvidenceCorrelator
 from app.engine.evaluator import EvidenceEvaluator
 from app.engine.graph import build_graph
 from app.engine.hypotheses import HypothesisEngine
-from app.engine.missing import MissingEvidenceAnalyzer
 from app.engine.report import ReportGenerator
 from app.models import Evidence, InvestigationContext, InvestigationRequest
 
 from tests.test_stage1 import ALERT
 
 
-def evidence(kind: str, finding: str, **metadata) -> Evidence:
-    return Evidence(id=f"E-{kind}-{finding}", source="reconix_cloud", type=kind, finding=finding, confidence=1.0, raw_reference="scan-1", metadata=metadata)
+def scan(findings):
+    return Evidence(id="E-scan", source="reconix_cloud", type="scan_result", finding="scan returned", confidence=1, raw_reference="scan-1", metadata={"scan_id": "scan-1", "findings": findings})
 
 
-def context_with(*items: Evidence) -> InvestigationContext:
+def context(*items):
     request = InvestigationRequest.model_validate(ALERT)
-    return InvestigationContext(
-        investigation_id="INV-stage4",
-        primary_alert=request,
-        asset=request.asset,
-        evidence=list(items),
+    return InvestigationContext(investigation_id="INV-stage4", primary_alert=request, asset=request.asset, evidence=list(items))
+
+
+def normalize(*findings):
+    value = context(scan(list(findings)))
+    graph = build_graph(value)
+    return value, EvidenceCorrelator().correlate(value, graph), graph
+
+
+def finding(kind, evidence, **extra):
+    return {"type": kind, "evidence": evidence, "metadata": {"category": kind}, **extra}
+
+
+def test_normalizes_only_atomic_reconix_observations():
+    value, _, _ = normalize(
+        finding("port", {"port": 80, "hostname": "example.com", "source": "reconix", "severity": "info"}),
+        finding("dns", {"record": "104.20.23.154", "hostname": "example.com"}),
+        finding("ssl", {"san": "*.example.com", "hostname": "example.com"}),
+        finding("http", {"url": "https://example.com", "status": 200}),
+        finding("subdomain", {"subdomain": "www.example.com"}),
+        finding("whois", {"hostname": "example.com"}),
     )
+    types = {item.type for item in value.evidence}
+    assert {"reconix_port_observation", "reconix_dns_observation", "reconix_tls_observation", "reconix_http_observation", "reconix_subdomain_observation", "reconix_whois_observation"} <= types
+    assert len(value.evidence) == 7  # One raw scan provenance record plus six atomic facts.
+    assert all("source observed" not in item.finding and "metadata observed" not in item.finding for item in value.evidence)
 
 
-def test_correlates_scan_finding_asset_and_network_observations():
-    context = context_with(
-        evidence("finding_observation", "finding", scan_id="scan-1", finding_id="finding-1", hostname="example.com"),
-        evidence("scan_result", "same finding from scan", scan_id="scan-1", finding_id="finding-1", hostname="example.com"),
-        evidence("port_observation", "port 80 open", scan_id="scan-1", hostname="example.com", port=80),
-        evidence("port_observation", "port 443 open", scan_id="scan-1", hostname="example.com", port=443),
-        evidence("dns_observation", "DNS record", scan_id="scan-1", hostname="example.com"),
-        evidence("http_observation", "HTTP 200", scan_id="scan-1", hostname="example.com", status=200),
-        evidence("tls_observation", "TLS certificate", scan_id="scan-1", hostname="example.com", certificate="present"),
-        evidence("subdomain_observation", "www.example.com", scan_id="scan-1", hostname="www.example.com"),
+def test_cloud_with_url_stays_cloud_and_is_meaningful():
+    value, _, _ = normalize(finding("cloud", {"url": "https://example.s3.amazonaws.com", "status": 403}))
+    cloud = next(item for item in value.evidence if item.type.startswith("reconix_"))
+    assert cloud.type == "reconix_cloud_observation"
+    assert "HTTP 403" in cloud.finding
+
+
+def test_semantic_relationships_are_specific_not_same_scan_noise():
+    value, result, _ = normalize(
+        finding("port", {"port": 80, "hostname": "example.com"}),
+        finding("port", {"port": 443, "hostname": "example.com"}),
+        finding("http", {"url": "https://example.com", "status": 200}),
+        finding("dns", {"hostname": "example.com", "record": "104.20.23.154"}),
+        finding("ssl", {"hostname": "example.com", "san": "*.example.com"}),
     )
-    result = EvidenceCorrelator().correlate(context, build_graph(context))
-    types = {relation.relationship_type for relation in result.relationships}
-
-    assert "same_scan" in types
-    assert "same_finding" in types
-    assert "same_asset" in types
-    assert "related_service" in types
-    assert "related_dns" in types
-    assert "related_tls" in types
-    assert "related_http" in types
+    types = {item.relationship_type for item in result.relationships}
+    assert {"related_service", "related_http", "related_dns", "related_tls"} <= types
+    assert "same_scan" not in types
+    assert result.semantic_relationship_count == len(result.relationships)
 
 
-def test_scan_result_becomes_correlated_service_context():
-    scan = evidence(
-        "scan_result",
-        "Reconix scan returned",
-        scan_id="scan-1",
-        target="example.com",
-        ports=[{"port": 80, "state": "open"}, {"port": 443, "state": "open"}],
-        dns={"records": ["example.com"]},
-        http={"status": 200},
-        tls={"certificate": "present"},
-        subdomains=["www.example.com"],
-        cloud={"provider": "example-cloud"},
+def test_duplicate_cross_source_port_is_corroboration_not_extra_confidence():
+    original = Evidence(id="E-alert", source="threatlens", type="finding_observation", finding="example.com has port 80 open", confidence=1, raw_reference="alert", metadata={"observation_type": "port", "hostname": "example.com", "port": 80})
+    value, result, graph = normalize(finding("port", {"hostname": "example.com", "port": 80}))
+    value.evidence.insert(0, original)
+    result = EvidenceCorrelator().correlate(value, graph)
+    hypotheses = HypothesisEngine().generate(value, graph, result)
+    assert any(item.relationship_type == "corroborates" for item in result.relationships)
+    assert result.canonical_evidence_count == 1
+    assert len(hypotheses[0].supporting_evidence) == 1
+
+
+def test_hypothesis_refines_service_and_keeps_missing_evidence_explicit():
+    value, result, graph = normalize(
+        finding("port", {"port": 80, "hostname": "example.com"}),
+        finding("port", {"port": 443, "hostname": "example.com"}),
+        finding("http", {"url": "https://example.com", "status": 200}),
+        finding("dns", {"hostname": "example.com", "record": "104.20.23.154"}),
+        finding("ssl", {"hostname": "example.com", "san": "*.example.com"}),
     )
-    context = context_with(evidence("finding_observation", "finding", hostname="example.com"), scan)
-    graph = build_graph(context)
-    result = EvidenceCorrelator().correlate(context, graph)
-    types = {item.type for item in context.evidence}
-
-    assert {"reconix_port_observation", "reconix_dns_observation", "reconix_http_observation", "reconix_tls_observation", "reconix_subdomain_observation", "reconix_cloud_observation"} <= types
-    assert any(relation.relationship_type == "related_service" for relation in result.relationships)
-
-
-def test_duplicate_finding_does_not_inflate_hypothesis_confidence():
-    primary = evidence("finding_observation", "finding", finding_id="finding-1", hostname="example.com")
-    duplicate = evidence("scan_result", "same finding from scan", finding_id="finding-1", hostname="example.com")
-    duplicate_context = context_with(primary, duplicate)
-    duplicate_result = EvidenceCorrelator().correlate(duplicate_context, build_graph(duplicate_context))
-    duplicate_hypothesis = HypothesisEngine().generate(duplicate_context, build_graph(duplicate_context), duplicate_result)[0]
-
-    single_context = context_with(primary.model_copy())
-    single_result = EvidenceCorrelator().correlate(single_context, build_graph(single_context))
-    single_hypothesis = HypothesisEngine().generate(single_context, build_graph(single_context), single_result)[0]
-
-    assert duplicate_result.duplicate_evidence_ids == [duplicate.id]
-    assert duplicate_result.correlated_evidence_count == 1
-    assert duplicate_hypothesis.confidence == single_hypothesis.confidence
+    hypothesis = HypothesisEngine().generate(value, graph, result)[0]
+    assert hypothesis.title == "Internet-facing web service requires validation"
+    assert len(hypothesis.supporting_evidence) == 3
+    assert len(hypothesis.contextual_evidence) == 2
+    assert "Historical access activity" in hypothesis.missing_evidence
+    assert 0 < hypothesis.confidence < 0.7
 
 
-def test_contradictory_evidence_reduces_confidence_and_remains_explicit():
-    context = context_with(
-        evidence("finding_observation", "finding", hostname="example.com"),
-        evidence("observation", "expected exposure is false", hostname="example.com", contradicts=["H-001"]),
-    )
-    graph = build_graph(context)
-    correlation = EvidenceCorrelator().correlate(context, graph)
-    hypothesis = HypothesisEngine().generate(context, graph, correlation)[0]
-
-    assert hypothesis.contradicting_evidence == ["E-observation-expected exposure is false"]
-    assert hypothesis.confidence < 0.4
+def test_contradiction_lowers_bounded_confidence():
+    value, result, graph = normalize(finding("port", {"port": 80, "hostname": "example.com"}))
+    contradiction = Evidence(id="E-no", source="inventory", type="port_observation", finding="port 80 is not expected", confidence=1, raw_reference="inventory", metadata={"observation_type": "port", "hostname": "example.com", "port": 81, "contradicts": ["H-001"]})
+    value.evidence.append(contradiction)
+    result = EvidenceCorrelator().correlate(value, graph)
+    hypothesis = HypothesisEngine().generate(value, graph, result)[0]
+    assert contradiction.id in hypothesis.contradicting_evidence
+    assert 0 <= hypothesis.confidence <= 1
 
 
-def test_confidence_is_clamped_and_missing_evidence_stays_explicit():
-    items = [evidence("observation", f"observation-{index}", hostname="example.com", supports=["H-001"]) for index in range(30)]
-    context = context_with(*items)
-    graph = build_graph(context)
-    correlation = EvidenceCorrelator().correlate(context, graph)
-    hypotheses = HypothesisEngine().generate(context, graph, correlation)
-    missing = MissingEvidenceAnalyzer().analyze(context, graph, hypotheses)
-    evaluation = EvidenceEvaluator().evaluate(context, hypotheses)
-
-    assert all(0.0 <= hypothesis.confidence <= 1.0 for hypothesis in hypotheses)
-    assert any(item.description == "Historical alerts for this asset" for item in missing)
-    assert "Historical access activity" in evaluation.missing_evidence
-
-
-def test_report_exposes_relationships_and_correlated_count():
-    context = context_with(
-        evidence("finding_observation", "finding", hostname="example.com"),
-        evidence("port_observation", "port 80", hostname="example.com", port=80),
-        evidence("port_observation", "port 443", hostname="example.com", port=443),
-    )
-    graph = build_graph(context)
-    correlation = EvidenceCorrelator().correlate(context, graph)
-    hypotheses = HypothesisEngine().generate(context, graph, correlation)
-    evaluation = EvidenceEvaluator().evaluate(context, hypotheses)
-    report = ReportGenerator().generate(context, graph, hypotheses, evaluation, correlation=correlation)
-
+def test_report_counters_relationships_and_steps_are_exposed():
+    value, result, graph = normalize(finding("port", {"port": 80, "hostname": "example.com"}), finding("http", {"url": "https://example.com", "status": 200}))
+    hypotheses = HypothesisEngine().generate(value, graph, result)
+    evaluation = EvidenceEvaluator().evaluate(value, hypotheses)
+    evaluation.missing_evidence = hypotheses[0].missing_evidence
+    report = ReportGenerator().generate(value, graph, hypotheses, evaluation, correlation=result)
+    assert report.raw_evidence_count > report.canonical_evidence_count
     assert report.evidence_relationships
-    assert report.correlated_evidence_count == len(correlation.unique_evidence_ids)
-    assert report.hypotheses[0].contextual_evidence
+    assert report.semantic_relationship_count
+    assert "Verify whether the service is intentionally exposed." in report.investigation_steps

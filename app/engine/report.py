@@ -21,13 +21,13 @@ class ReportGenerator:
             hypotheses=hypotheses,
             evidence=context.evidence,
             evidence_relationships=correlation.relationships if correlation else [],
+            raw_evidence_count=correlation.raw_evidence_count if correlation else len(context.evidence),
+            canonical_evidence_count=correlation.canonical_evidence_count if correlation else len(context.evidence),
             correlated_evidence_count=correlation.correlated_evidence_count if correlation else len(context.evidence),
+            semantic_relationship_count=correlation.semantic_relationship_count if correlation else 0,
+            provenance_relationship_count=correlation.provenance_relationship_count if correlation else 0,
             missing_evidence=evaluation.missing_evidence,
-            investigation_steps=[
-                "Verify whether the endpoint is intentionally public.",
-                "Inspect authentication configuration.",
-                "Review historical access logs.",
-            ],
+            investigation_steps=self._steps(evaluation.missing_evidence),
             mitre_attack=context.primary_alert.mitre_attack,
             recommended_actions=["Review the evidence with a human analyst."],
             uncertainties=evaluation.uncertainties,
@@ -37,3 +37,15 @@ class ReportGenerator:
             stop_reason=state.stop_reason if state else None,
             state=state,
         )
+
+    def _steps(self, missing: list[str]) -> list[str]:
+        rules = {
+            "Expected exposure status": "Verify whether the service is intentionally exposed.",
+            "Service ownership": "Confirm service ownership and expected operating context.",
+            "Authentication and access-control configuration": "Review the authentication and access-control configuration.",
+            "Historical access activity": "Review historical access logs for unexpected access patterns.",
+            "Cloud resource ownership": "Confirm cloud resource ownership.",
+            "Cloud access-control configuration": "Review cloud access-control configuration.",
+            "Intended public or private state": "Verify the intended public or private state of the cloud resource.",
+        }
+        return [rules[item] for item in missing if item in rules]

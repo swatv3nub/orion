@@ -6,140 +6,99 @@ from app.models import CorrelationResult, Evidence, Hypothesis, HypothesisStatus
 
 class HypothesisEngine:
     def generate(self, context: InvestigationContext, graph: EvidenceGraph, correlation: CorrelationResult | None = None) -> list[Hypothesis]:
-        evidence_by_id = {e.id: e for e in context.evidence}
-        evidence_ids = correlation.unique_evidence_ids if correlation else list(evidence_by_id)
-        evidence = [evidence_by_id[evidence_id] for evidence_id in evidence_ids if evidence_id in evidence_by_id]
-        finding = context.primary_alert.finding
-        history_checked = any(e.type in {"historical_alert", "history_query"} for e in context.evidence)
-        intentionally_protected = any(
-            "intentional" in e.finding.lower() or e.metadata.get("intentional") is True
-            for e in context.evidence
-        )
-        is_http = finding.type.lower() == "http" or "http" in finding.title.lower()
-        if not is_http:
-            supporting, contradicting, contextual = self._evidence_roles(evidence, "H-001", correlation, primary_only=True)
-            return [Hypothesis(
-                id="H-001", title="Observed finding requires validation",
-                description="The supplied finding is real input but its operational significance is not established.",
-                supporting_evidence=supporting or evidence_ids[:1],
-                contradicting_evidence=contradicting,
-                contextual_evidence=contextual,
-                missing_evidence=[] if history_checked else ["Expected asset state", "Historical activity"],
-                confidence=self._confidence(0.35, supporting, contradicting, []), status=HypothesisStatus.unresolved,
+        evidence = {item.id: item for item in context.evidence}
+        ids = correlation.unique_evidence_ids if correlation else list(evidence)
+        atomic = [evidence[item] for item in ids if item in evidence]
+        by_category: dict[str, list[Evidence]] = {}
+        for item in atomic:
+            category = self._category(item)
+            by_category.setdefault(category, []).append(item)
+
+        services = by_category.get("port", []) + by_category.get("http", [])
+        if services:
+            support = [item.id for item in services]
+            context_ids = [item.id for category in ("dns", "tls", "subdomain") for item in by_category.get(category, [])]
+            missing = ["Expected exposure status", "Service ownership", "Authentication and access-control configuration", "Historical access activity"]
+            hypotheses = [Hypothesis(
+                id="H-001",
+                title="Internet-facing web service requires validation",
+                description=self._service_description(context, by_category),
+                supporting_evidence=support,
+                contextual_evidence=context_ids,
+                contradicting_evidence=self._contradictions(atomic, "H-001"),
+                missing_evidence=missing,
+                confidence=self._confidence(0.35, support, atomic, missing, correlation),
+                status=HypothesisStatus.plausible,
             )]
+            if "admin" in context.primary_alert.finding.title.lower():
+                hypotheses.append(Hypothesis(
+                    id="H-002", title="Administrative interface exposure requires validation",
+                    description="An administrative endpoint is identified, but its intended exposure and access controls are not established.",
+                    supporting_evidence=[atomic[0].id] if atomic else [],
+                    missing_evidence=["Authentication and access-control configuration", "Expected exposure status"],
+                    confidence=0.3 if any("intentional" in item.finding.lower() or item.metadata.get("intentional") is True for item in context.evidence) else 0.4,
+                    status=HypothesisStatus.plausible,
+                ))
+            return hypotheses + self._cloud_hypothesis(by_category, atomic, correlation)
 
-        observations = self._observation_summary(evidence[1:])
-        context_description = (
-            f" Correlated observations include {', '.join(observations)}."
-            " They provide service context but do not establish unintended exposure or vulnerability."
-            if observations else ""
-        )
-        roles = {
-            "H-001": self._evidence_roles(evidence, "H-001", correlation),
-            "H-002": self._evidence_roles(evidence, "H-002", correlation),
-            "H-003": self._evidence_roles(evidence, "H-003", correlation),
-        }
-        h1_support, h1_contradicting, h1_contextual = roles["H-001"]
-        h2_support, h2_contradicting, h2_contextual = roles["H-002"]
-        h3_support, h3_contradicting, h3_contextual = roles["H-003"]
-        return [
-            Hypothesis(
-                id="H-001", title="Benign internet-facing service",
-                description="The observed service may be intentionally exposed." + context_description,
-                supporting_evidence=h1_support,
-                contradicting_evidence=h1_contradicting,
-                contextual_evidence=h1_contextual,
-                missing_evidence=["Expected exposure status", "Endpoint ownership"],
-                confidence=self._confidence(0.4, h1_support, h1_contradicting, ["Expected exposure status", "Endpoint ownership"], correlation),
-                status=HypothesisStatus.plausible,
-            ),
-            Hypothesis(
-                id="H-002", title="Administrative interface exposed",
-                description="The observed endpoint may provide an administrative interface." + context_description,
-                supporting_evidence=h2_support,
-                contradicting_evidence=h2_contradicting,
-                contextual_evidence=h2_contextual,
-                missing_evidence=["Authentication configuration", "Expected exposure status"],
-                confidence=self._confidence(0.2 if intentionally_protected else 0.5, h2_support, h2_contradicting, ["Authentication configuration", "Expected exposure status"], correlation),
-                status=HypothesisStatus.plausible,
-            ),
-            Hypothesis(
-                id="H-003", title="Misconfigured access-control boundary",
-                description="The endpoint may not enforce the access boundary intended by its owner." + context_description,
-                supporting_evidence=h3_support,
-                contradicting_evidence=h3_contradicting,
-                contextual_evidence=h3_contextual,
-                missing_evidence=["Authentication configuration"] if history_checked else ["Authentication configuration", "Historical access activity"],
-                confidence=self._confidence(0.35, h3_support, h3_contradicting, ["Authentication configuration"] if history_checked else ["Authentication configuration", "Historical access activity"], correlation),
+        cloud = by_category.get("cloud", [])
+        if cloud:
+            missing = ["Cloud resource ownership", "Cloud access-control configuration", "Intended public or private state"]
+            return [Hypothesis(
+                id="H-004", title="Cloud resource exposure requires validation",
+                description="Cloud resource observations were returned, but their intended access state is not established.",
+                supporting_evidence=[item.id for item in cloud],
+                missing_evidence=missing,
+                contradicting_evidence=self._contradictions(atomic, "H-004"),
+                confidence=self._confidence(0.3, [item.id for item in cloud], atomic, missing, correlation),
                 status=HypothesisStatus.unresolved,
-            ),
-        ]
+            )]
+        return [Hypothesis(
+            id="H-001", title="Observed finding requires validation",
+            description="The supplied finding is real input but its operational significance is not established.",
+            supporting_evidence=[atomic[0].id] if atomic else [],
+            contradicting_evidence=self._contradictions(context.evidence, "H-001"),
+            missing_evidence=["Expected asset state", "Historical activity"],
+            confidence=0.3,
+            status=HypothesisStatus.unresolved,
+        )]
 
-    def _evidence_roles(self, evidence: list[Evidence], hypothesis_id: str, correlation: CorrelationResult | None, primary_only: bool = False) -> tuple[list[str], list[str], list[str]]:
-        if correlation is None:
-            supporting = [evidence[0].id] if evidence else []
-            return (supporting if primary_only else [e.id for e in evidence], [], [])
-        supporting: list[str] = []
-        contradicting: list[str] = []
-        contextual: list[str] = []
-        for index, item in enumerate(evidence):
-            if self._contradicts(item, hypothesis_id):
-                contradicting.append(item.id)
-            elif self._supports(item, hypothesis_id) or index == 0:
-                supporting.append(item.id)
-            else:
-                contextual.append(item.id)
-        return supporting, contradicting, contextual
+    def _cloud_hypothesis(self, categories: dict[str, list[Evidence]], evidence: list[Evidence], correlation: CorrelationResult | None) -> list[Hypothesis]:
+        cloud = categories.get("cloud", [])
+        if not cloud:
+            return []
+        missing = ["Cloud resource ownership", "Cloud access-control configuration", "Intended public or private state"]
+        return [Hypothesis(
+            id="H-004", title="Cloud resource exposure requires validation",
+            description="Cloud observations provide context but do not establish intended access state or a vulnerability.",
+            supporting_evidence=[item.id for item in cloud],
+            missing_evidence=missing,
+            contradicting_evidence=self._contradictions(evidence, "H-004"),
+            confidence=self._confidence(0.25, [item.id for item in cloud], evidence, missing, correlation),
+            status=HypothesisStatus.unresolved,
+        )]
 
-    def _supports(self, evidence: Evidence, hypothesis_id: str) -> bool:
-        value = evidence.metadata.get("supports")
-        if value is True:
-            return True
-        if isinstance(value, str):
-            return value in {hypothesis_id, "all"}
-        if isinstance(value, list):
-            return hypothesis_id in value or "all" in value
-        if hypothesis_id == "H-002":
-            text = evidence.finding.lower()
-            return any(term in text for term in ("admin", "authentication", "unauthorized", "401"))
-        return False
+    def _category(self, evidence: Evidence) -> str:
+        value = evidence.metadata.get("observation_type")
+        return str(value).lower() if value else "observation"
 
-    def _contradicts(self, evidence: Evidence, hypothesis_id: str) -> bool:
-        value = evidence.metadata.get("contradicts")
-        if value is True:
-            return True
-        if isinstance(value, str):
-            return value in {hypothesis_id, "all"}
-        return isinstance(value, list) and (hypothesis_id in value or "all" in value)
+    def _service_description(self, context: InvestigationContext, categories: dict[str, list[Evidence]]) -> str:
+        asset = context.asset.hostname if context.asset and context.asset.hostname else "the asset"
+        parts: list[str] = []
+        if categories.get("port"):
+            parts.append("open ports " + ", ".join(str(item.metadata.get("port")) for item in categories["port"] if item.metadata.get("port") is not None))
+        if categories.get("http"):
+            parts.append("HTTP response data")
+        return f"The scan confirms an externally reachable web service on {asset} through {' and '.join(parts)}. Available evidence establishes exposure, but not intended exposure, access-control posture, or vulnerability."
 
-    def _confidence(self, base: float, supporting: list[str], contradicting: list[str], missing: list[str], correlation: CorrelationResult | None = None) -> float:
-        # Bounded heuristic: support adds at most .15, relations at most .05,
-        # while explicit contradictions and unresolved requirements subtract.
-        value = base + min(0.15, len(set(supporting)) * 0.05)
-        if correlation and any(relation.relationship_type in {"related_service", "related_dns", "related_tls", "related_http"} for relation in correlation.relationships):
-            value += 0.05
-        value -= min(0.4, len(set(contradicting)) * 0.15)
-        value -= min(0.3, len(missing) * 0.03)
+    def _contradictions(self, evidence: list[Evidence], hypothesis: str) -> list[str]:
+        return [item.id for item in evidence if item.metadata.get("contradicts") is True or isinstance(item.metadata.get("contradicts"), list) and hypothesis in item.metadata["contradicts"]]
+
+    def _confidence(self, base: float, support: list[str], evidence: list[Evidence], missing: list[str], correlation: CorrelationResult | None) -> float:
+        contradictions = self._contradictions(evidence, "H-001")
+        value = base + min(0.24, len(set(support)) * 0.08)
+        if correlation and any(item.relationship_type == "corroborates" for item in correlation.relationships):
+            value += 0.08
+        value -= min(0.3, len(contradictions) * 0.15)
+        value -= min(0.24, len(missing) * 0.06)
         return max(0.0, min(1.0, value))
-
-    def _observation_summary(self, evidence: list[Evidence]) -> list[str]:
-        summaries: list[str] = []
-        for item in evidence:
-            metadata = item.metadata
-            if "port" in metadata:
-                label = f"port {metadata['port']}"
-            elif item.type.endswith("dns_observation"):
-                label = "DNS resolution"
-            elif item.type.endswith("tls_observation"):
-                label = "TLS information"
-            elif item.type.endswith("http_observation"):
-                label = f"HTTP response {metadata.get('status', metadata.get('status_code', 'data'))}"
-            elif item.type.endswith("subdomain_observation"):
-                label = f"subdomain {metadata.get('hostname', metadata.get('value', 'observed'))}"
-            elif item.type.endswith("cloud_observation"):
-                label = "cloud observations"
-            else:
-                continue
-            if label not in summaries:
-                summaries.append(label)
-        return summaries
