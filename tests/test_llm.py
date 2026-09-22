@@ -5,8 +5,8 @@ import json
 import pytest
 
 from app.config import Settings
-from app.llm.base import LLMError, LLMReasoner
-from app.llm.factory import FallbackReasoner
+from app.llm.base import LLMError, LLMReasoner, llm_input
+from app.llm.factory import FallbackReasoner, create_reasoner
 from app.llm.groq import GroqReasoner
 from app.llm.openrouter import OpenRouterReasoner
 from app.llm.schemas import AnalystAssessment, validate_assessment
@@ -31,17 +31,23 @@ class FakeClient:
         self.response = response
         self.error = error
         self.called = None
+        self.calls = 0
         self.chat = type("Chat", (), {"completions": self})()
 
     def create(self, **kwargs):
         self.called = kwargs
+        self.calls += 1
         if self.error:
             raise self.error
         return self.response
 
 
 def response(value: AnalystAssessment):
-    message = type("Message", (), {"content": json.dumps(value.model_dump())})()
+    return raw_response(json.dumps(value.model_dump()))
+
+
+def raw_response(content):
+    message = type("Message", (), {"content": content})()
     return type("Response", (), {"choices": [type("Choice", (), {"message": message})()]})()
 
 
@@ -75,6 +81,49 @@ def test_groq_and_openrouter_return_the_same_structured_assessment():
         assert reasoner.client.called["response_format"]["json_schema"]["strict"]
 
 
+@pytest.mark.parametrize("content", ["", "{}", "not json", '{"classification":"benign"}', "[]", None])
+def test_invalid_structured_responses_fail_closed(content):
+    reasoner = GroqReasoner(Settings(groq_api_key="test"), FakeClient(raw_response(content)))
+    with pytest.raises(LLMError) as error:
+        reasoner.analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_invalid_output"
+
+
+def test_missing_choices_fail_as_invalid_output():
+    client = FakeClient(type("Response", (), {"choices": []})())
+    with pytest.raises(LLMError) as error:
+        GroqReasoner(Settings(groq_api_key="test"), client).analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_invalid_output"
+
+
+def test_input_limit_is_enforced_before_provider_request():
+    size = len(llm_input(request(), [], [], [], [], 1_000_000).encode())
+    client = FakeClient(response(assessment()))
+    reasoner = GroqReasoner(Settings(groq_api_key="test", llm_max_input_bytes=size), client)
+    assert isinstance(reasoner.analyze(request(), [], [], [], []), AnalystAssessment)
+    assert client.calls == 1
+
+    client = FakeClient(response(assessment()))
+    reasoner = GroqReasoner(Settings(groq_api_key="test", llm_max_input_bytes=size - 1), client)
+    with pytest.raises(LLMError) as error:
+        reasoner.analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_error"
+    assert client.calls == 0
+
+
+def test_configured_openrouter_pinned_model_is_used_for_fallback():
+    pinned = "nvidia/nemotron-3-super-120b-a12b:free"
+    reasoner = create_reasoner(Settings(groq_api_key="test", openrouter_api_key="test", openrouter_model=pinned))
+    assert isinstance(reasoner, FallbackReasoner)
+    reasoner.primary.client = FakeClient(error=ProviderError(503))
+    reasoner.fallback.client = FakeClient(response(assessment()))
+    result = reasoner.analyze(request(), [], [], [], [])
+    assert isinstance(result, AnalystAssessment)
+    assert reasoner.primary.client.calls == 2
+    assert reasoner.fallback.client.called["model"] == pinned
+    assert (reasoner.provider, reasoner.model, reasoner.fallback_used, reasoner.primary_failure_reason) == ("openrouter", pinned, True, "llm_unavailable")
+
+
 @pytest.mark.parametrize("status, code", [(429, "llm_quota_exhausted"), (503, "llm_unavailable")])
 def test_groq_http_errors_are_classified(status, code):
     reasoner = GroqReasoner(Settings(groq_api_key="test"), FakeClient(error=ProviderError(status)))
@@ -103,6 +152,39 @@ def test_invalid_output_and_validation_failures_do_not_fallback():
     invalid = assessment("unknown")
     with pytest.raises(ValueError):
         validate_assessment(invalid, {"E-1"}, {"H-001"}, [])
+
+
+def test_invalid_groq_response_does_not_trigger_openrouter():
+    reasoner = create_reasoner(Settings(groq_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
+    reasoner.primary.client = FakeClient(raw_response("{}"))
+    reasoner.fallback.client = FakeClient(response(assessment()))
+    with pytest.raises(LLMError) as error:
+        reasoner.analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_invalid_output"
+    assert reasoner.primary.client.calls == 1
+    assert reasoner.fallback.client.calls == 0
+
+
+def test_non_transient_primary_failure_does_not_call_openrouter():
+    reasoner = create_reasoner(Settings(groq_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
+    reasoner.primary.client = FakeClient(error=ProviderError(400))
+    reasoner.fallback.client = FakeClient(response(assessment()))
+    with pytest.raises(LLMError) as error:
+        reasoner.analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_error"
+    assert reasoner.primary.client.calls == 1
+    assert reasoner.fallback.client.calls == 0
+    assert reasoner.provider == "groq" and not reasoner.fallback_used
+
+
+def test_reused_reasoner_reports_primary_after_fallback():
+    primary = FakeReasoner("groq", "primary", [LLMError("llm_timeout", transient=True), LLMError("llm_timeout", transient=True), assessment()])
+    fallback = FakeReasoner("openrouter", "pinned/model", [assessment()])
+    reasoner = FallbackReasoner(primary, fallback)
+    reasoner.analyze(None, [], [], [], [])
+    assert reasoner.provider == "openrouter" and reasoner.fallback_used
+    reasoner.analyze(None, [], [], [], [])
+    assert (reasoner.provider, reasoner.model, reasoner.fallback_used, reasoner.primary_failure_reason) == ("groq", "primary", False, None)
 
 
 def test_validation_failure_does_not_invoke_fallback_provider():

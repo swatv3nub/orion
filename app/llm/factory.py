@@ -13,6 +13,7 @@ class FallbackReasoner(LLMReasoner):
     def analyze(self, *args):
         self.fallback_used = False
         self.primary_failure_reason = None
+        self.provider, self.model = self.primary.provider, self.primary.model
         try:
             return self._with_one_retry(*args)
         except LLMError as exc:

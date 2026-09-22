@@ -25,20 +25,22 @@ class OpenAICompatibleReasoner(LLMReasoner):
     def analyze(self, alert: ThreatLensAlert, evidence: list[Evidence], hypotheses: list[Hypothesis], missing_evidence: list[str], tool_activity: list[ToolActivity]) -> AnalystAssessment:
         if not self.api_key or not self.model:
             raise LLMError("llm_error", "LLM provider is not configured")
+        contents = llm_input(alert, evidence, hypotheses, missing_evidence, tool_activity, self.max_input_bytes)
         try:
             response = self._client().chat.completions.create(
                 model=self.model,
-                messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": llm_input(alert, evidence, hypotheses, missing_evidence, tool_activity, self.max_input_bytes)}],
+                messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": contents}],
                 response_format={"type": "json_schema", "json_schema": {"name": "analyst_assessment", "strict": True, "schema": strict_schema(AnalystAssessment.model_json_schema())}},
                 max_tokens=self.max_output_tokens,
             )
-            return AnalystAssessment.model_validate(json.loads(response.choices[0].message.content))
         except LLMError:
             raise
-        except (json.JSONDecodeError, ValueError, TypeError, AttributeError) as exc:
-            raise LLMError("llm_invalid_output") from exc
         except Exception as exc:
             raise self._error(exc) from exc
+        try:
+            return AnalystAssessment.model_validate(json.loads(response.choices[0].message.content))
+        except (ValueError, TypeError, AttributeError, IndexError, KeyError) as exc:
+            raise LLMError("llm_invalid_output") from exc
 
     def _client(self) -> Any:
         if self.client is not None:
