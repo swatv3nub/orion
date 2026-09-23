@@ -238,6 +238,30 @@ def test_validation_failure_does_not_invoke_fallback_provider():
     assert report.assessment_consistency.status == "consistent"
 
 
+def test_consistency_validation_failure_fails_closed(monkeypatch):
+    import app.service as service_module
+
+    reconcile = service_module.reconcile_assessment
+
+    def invalid_consistency(assessment_value, *args):
+        if assessment_value is not None:
+            raise ValueError("invalid consistency")
+        return reconcile(None, *args)
+
+    monkeypatch.setattr(service_module, "reconcile_assessment", invalid_consistency)
+    reasoner = FakeReasoner(
+        "test", "test", [lambda alert, evidence, hypotheses, missing, activity: assessment(evidence[0].id, hypotheses[0].id)]
+    )
+    report = InvestigationService(
+        settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=reasoner
+    ).investigate(request())
+
+    assert report.assessment_consistency.status == "invalid"
+    assert report.llm_assessment is not None
+    assert report.final_assessment.classification == report.deterministic_assessment.classification
+    assert report.final_assessment.source == "deterministic"
+
+
 def test_unknown_hypothesis_missing_review_and_automated_action_are_rejected():
     valid = assessment()
     with pytest.raises(ValueError):

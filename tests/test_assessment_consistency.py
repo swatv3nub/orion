@@ -59,11 +59,18 @@ def test_missing_security_context_reconciles_confirmed_to_investigation():
     assert deterministic.classification == "needs_investigation"
     assert final.classification == "needs_investigation"
     assert final.source == "reconciled"
-    assert "ownership" in final.rationale
+    assert "The LLM assessment identifies verified observations" in final.rationale
+    assert "Missing evidence includes:" in final.rationale
+    assert "Authentication and access-control configuration" in final.rationale
+    assert "Service ownership" in final.rationale
+    assert "The deterministic assessment does not contain a supported hypothesis meeting the confirmation threshold" in final.rationale
+    assert "The LLM assessment confirms the observation" not in final.rationale
+    assert "deterministic hypothesis is not supported" not in final.rationale
     assert consistency.status == "reconciled"
 
 
 def test_sufficiently_supported_finding_remains_confirmed():
+    # Supported deterministic hypothesis, adequate confidence, and no relevant gaps.
     _, final, consistency = run(setup_assessment(), confidence=0.9)
     assert final.classification == "confirmed"
     assert final.source == "reconciled"

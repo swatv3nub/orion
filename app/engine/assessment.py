@@ -47,6 +47,8 @@ def reconcile_assessment(
         )
 
     blockers: set[str] = set()
+    missing_context: set[str] = set()
+    lacks_supported_hypothesis = False
     if assessment.classification == "confirmed":
         by_id = {hypothesis.id: hypothesis for hypothesis in hypotheses}
         aligned = False
@@ -58,20 +60,23 @@ def reconcile_assessment(
             if not set(proposed.evidence_refs) & set(deterministic_hypothesis.supporting_evidence):
                 continue
             aligned = True
-            blockers.update(set(deterministic_hypothesis.missing_evidence) & _SECURITY_CONTEXT_GAPS)
+            missing_context.update(set(deterministic_hypothesis.missing_evidence) & _SECURITY_CONTEXT_GAPS)
             if deterministic_hypothesis.status != HypothesisStatus.supported:
-                blockers.add("deterministic hypothesis is not supported")
+                lacks_supported_hypothesis = True
         if not aligned:
-            blockers.add("confirmed conclusion is not linked to a supported investigation hypothesis")
+            lacks_supported_hypothesis = True
         if assessment.confidence < 0.75:
             blockers.add("LLM confidence is below the confirmed-assessment threshold")
 
-    if blockers:
-        reason = (
-            "The LLM assessment confirms the observation, but the supplied evidence does not establish "
-            + ", ".join(sorted(blockers))
-            + ". The final classification therefore remains needs_investigation."
-        )
+    if blockers or missing_context or lacks_supported_hypothesis:
+        reason = "The LLM assessment identifies verified observations but does not establish the security context required for a confirmed classification."
+        if missing_context:
+            reason += " Missing evidence includes: " + ", ".join(sorted(missing_context)) + "."
+        if lacks_supported_hypothesis:
+            reason += " The deterministic assessment does not contain a supported hypothesis meeting the confirmation threshold."
+        if blockers:
+            reason += " " + "; ".join(sorted(blockers)) + "."
+        reason += " The deterministic assessment therefore remains needs_investigation."
         final = deterministic.model_copy(update={"rationale": reason, "source": AssessmentSource.reconciled})
         status = AssessmentConsistencyStatus.reconciled
     else:
