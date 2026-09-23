@@ -21,6 +21,25 @@ class Classification(StrEnum):
     suspicious = "suspicious"
 
 
+class AssessmentClassification(StrEnum):
+    benign = "benign"
+    needs_investigation = "needs_investigation"
+    suspicious = "suspicious"
+    confirmed = "confirmed"
+
+
+class AssessmentSource(StrEnum):
+    deterministic = "deterministic"
+    llm = "llm"
+    reconciled = "reconciled"
+
+
+class AssessmentConsistencyStatus(StrEnum):
+    consistent = "consistent"
+    reconciled = "reconciled"
+    invalid = "invalid"
+
+
 class HypothesisStatus(StrEnum):
     supported = "supported"
     plausible = "plausible"
@@ -222,6 +241,19 @@ class Evaluation(BaseModel):
     needs_investigation: bool = True
 
 
+class FinalAssessment(BaseModel):
+    classification: AssessmentClassification
+    severity: Severity
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str
+    source: AssessmentSource
+
+
+class AssessmentConsistency(BaseModel):
+    status: AssessmentConsistencyStatus
+    reason: str
+
+
 class AnalystReport(BaseModel):
     investigation_id: str
     alert_id: str
@@ -238,6 +270,9 @@ class AnalystReport(BaseModel):
     semantic_relationship_count: int = Field(default=0, ge=0)
     provenance_relationship_count: int = Field(default=0, ge=0)
     llm_assessment: dict[str, Any] | None = None
+    deterministic_assessment: FinalAssessment
+    final_assessment: FinalAssessment
+    assessment_consistency: AssessmentConsistency
     llm_status: str | None = None
     llm_model: str | None = None
     llm_failure_reason: str | None = None

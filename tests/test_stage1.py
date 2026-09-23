@@ -98,9 +98,16 @@ def test_api_complete_flow_and_missing_investigation():
     investigation_id = created.json()["investigation_id"]
     assert created.json()["classification"] == "needs_investigation"
     assert client.get(f"/v1/investigations/{investigation_id}").status_code == 200
+    investigation = client.get(f"/v1/investigations/{investigation_id}").json()
+    assert investigation["report"]["classification"] == "needs_investigation"
+    assert investigation["report"]["deterministic_assessment"]["classification"] == "needs_investigation"
+    assert investigation["report"]["final_assessment"]["classification"] == "needs_investigation"
+    assert investigation["report"]["assessment_consistency"]["status"] == "consistent"
     report = client.get(f"/v1/investigations/{investigation_id}/report")
     assert report.status_code == 200
     assert report.json()["automated_action"] == "none"
+    assert report.json()["human_review_required"]
+    assert report.json()["final_assessment"]["source"] == "deterministic"
     assert client.get("/v1/investigations/INV-missing").status_code == 404
     assert client.get("/v1/investigations/INV-missing/report").status_code == 404
 

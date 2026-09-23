@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from app.engine.graph import EvidenceGraph
-from app.models import AnalystReport, CorrelationResult, Evaluation, Hypothesis, InvestigationContext, InvestigationState, ToolActivity
+from app.models import AnalystReport, AssessmentConsistency, CorrelationResult, Evaluation, FinalAssessment, Hypothesis, InvestigationContext, InvestigationState, Severity, ToolActivity
+from app.engine.assessment import reconcile_assessment
+from app.llm.schemas import AnalystAssessment
 
 
 class ReportGenerator:
@@ -16,8 +18,18 @@ class ReportGenerator:
                   llm_failure_reason: str | None = None,
                   llm_provider: str | None = None,
                   llm_fallback_used: bool = False,
-                  llm_primary_failure_reason: str | None = None) -> AnalystReport:
+                  llm_primary_failure_reason: str | None = None,
+                  deterministic_assessment: FinalAssessment | None = None,
+                  final_assessment: FinalAssessment | None = None,
+                  assessment_consistency: AssessmentConsistency | None = None) -> AnalystReport:
         title = context.primary_alert.finding.title
+        if deterministic_assessment is None or final_assessment is None or assessment_consistency is None:
+            deterministic_assessment, final_assessment, assessment_consistency = reconcile_assessment(
+                AnalystAssessment.model_validate(llm_assessment) if llm_assessment else None,
+                evaluation,
+                context.primary_alert.finding.severity,
+                hypotheses,
+            )
         return AnalystReport(
             investigation_id=context.investigation_id,
             alert_id=context.primary_alert.alert_id,
@@ -34,6 +46,9 @@ class ReportGenerator:
             semantic_relationship_count=correlation.semantic_relationship_count if correlation else 0,
             provenance_relationship_count=correlation.provenance_relationship_count if correlation else 0,
             llm_assessment=llm_assessment,
+            deterministic_assessment=deterministic_assessment,
+            final_assessment=final_assessment,
+            assessment_consistency=assessment_consistency,
             llm_status=llm_status,
             llm_model=llm_model,
             llm_failure_reason=llm_failure_reason,

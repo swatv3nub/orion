@@ -14,10 +14,11 @@ from app.engine.executor import InvestigationExecutor
 from app.engine.missing import MissingEvidenceAnalyzer
 from app.engine.planner import InvestigationPlanner
 from app.engine.report import ReportGenerator
+from app.engine.assessment import reconcile_assessment
 from app.llm import LLMError, LLMReasoner, create_reasoner
 from app.llm.schemas import validate_assessment
 from app.policy import PolicyEngine
-from app.models import AnalystReport, InvestigationRequest
+from app.models import AssessmentConsistency, AssessmentConsistencyStatus, AnalystReport, InvestigationRequest
 from app.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -105,10 +106,23 @@ class InvestigationService:
                 evaluation.uncertainties.append("LLM assessment was unavailable or failed validation; deterministic analysis was preserved.")
                 llm_failure_reason = "llm_error"
                 logger.warning("LLM assessment failed reason=%s", llm_failure_reason)
+        try:
+            deterministic_assessment, final_assessment, consistency = reconcile_assessment(
+                assessment, evaluation, context.primary_alert.finding.severity, hypotheses
+            )
+        except Exception:
+            deterministic_assessment, final_assessment, _ = reconcile_assessment(
+                None, evaluation, context.primary_alert.finding.severity, hypotheses
+            )
+            consistency = AssessmentConsistency(
+                status=AssessmentConsistencyStatus.invalid,
+                reason="Assessment consistency validation failed; deterministic assessment preserved.",
+            )
         report = self.report_generator.generate(
             context, graph, hypotheses, evaluation, activities, state, correlation,
             assessment.model_dump(mode="json") if assessment else None, llm_status, llm_model, llm_failure_reason,
             llm_provider, llm_fallback_used, llm_primary_failure_reason,
+            deterministic_assessment, final_assessment, consistency,
         )
         self.reports[investigation_id] = report
         return report

@@ -234,6 +234,8 @@ def test_validation_failure_does_not_invoke_fallback_provider():
     report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=FallbackReasoner(primary, fallback)).investigate(request())
     assert report.llm_failure_reason == "llm_validation_failed"
     assert fallback.calls == 0
+    assert report.final_assessment.classification == report.deterministic_assessment.classification
+    assert report.assessment_consistency.status == "consistent"
 
 
 def test_unknown_hypothesis_missing_review_and_automated_action_are_rejected():
@@ -251,6 +253,8 @@ def test_both_provider_failures_preserve_deterministic_report():
     report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=FallbackReasoner(primary, fallback)).investigate(request())
     assert report.state.status == "partial"
     assert report.llm_assessment is None
+    assert report.final_assessment.classification == report.deterministic_assessment.classification
+    assert report.final_assessment.source == "deterministic"
     assert report.llm_provider == "openrouter"
     assert report.llm_fallback_used
     assert report.llm_primary_failure_reason == "llm_unavailable"
@@ -266,3 +270,5 @@ def test_successful_provider_metadata_and_validation_failure_are_reported():
     invalid = FakeReasoner("groq", "primary", [assessment("unknown")])
     report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=invalid).investigate(request())
     assert report.llm_failure_reason == "llm_validation_failed"
+    assert report.llm_assessment is None
+    assert report.final_assessment.classification == report.deterministic_assessment.classification
