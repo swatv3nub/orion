@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.llm.base import LLMError, LLMReasoner, llm_input
 from app.llm.factory import FallbackReasoner, create_reasoner
-from app.llm.gemini import GeminiReasoner
+from app.llm.gemini import GeminiReasoner, gemini_schema
 from app.llm.openai import OpenAIReasoner
 from app.llm.openrouter import OpenRouterReasoner
 from app.llm.schemas import AnalystAssessment, validate_assessment
@@ -117,6 +117,19 @@ def test_gemini_returns_structured_assessment():
     assert client.called["json"]["generationConfig"]["responseMimeType"] == "application/json"
     assert client.called["json"]["generationConfig"]["responseSchema"]["type"] == "OBJECT"
     assert client.called["url"].endswith(":generateContent")
+
+
+def test_gemini_schema_strips_additional_properties_and_preserves_constraints():
+    schema = gemini_schema(AnalystAssessment.model_json_schema())
+    assert "additionalProperties" not in json.dumps(schema)
+    assert {"classification", "severity", "human_review_required", "automated_action"} <= set(schema["required"])
+    assert schema["properties"]["classification"]["enum"] == ["benign", "needs_investigation", "suspicious", "confirmed"]
+    assert schema["properties"]["summary"]["maxLength"] == 240
+    hypothesis = schema["properties"]["hypotheses"]["items"]
+    assert hypothesis["required"] == ["id", "statement", "evidence_refs", "confidence", "status"]
+    assert hypothesis["properties"]["statement"]["maxLength"] == 160
+    assert hypothesis["properties"]["evidence_refs"]["maxItems"] == 4
+    assert AnalystAssessment.model_validate(assessment().model_dump()) == assessment()
 
 
 @pytest.mark.parametrize("response", [

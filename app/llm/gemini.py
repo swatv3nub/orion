@@ -124,14 +124,11 @@ def gemini_schema(schema: dict[str, Any]) -> dict[str, Any]:
             return value
         if "$ref" in value:
             return convert(deepcopy(definitions[value["$ref"].rsplit("/", 1)[-1]]))
-        result = {key: convert(item) for key, item in value.items() if key not in {"$defs", "title", "default"}}
+        result = {key: convert(item) for key, item in value.items() if key not in {"$defs", "title", "default", "additionalProperties"}}
         if "const" in result:
             result["enum"] = [result.pop("const")]
         if "type" in result:
             result["type"] = result["type"].upper()
-        if result.get("type") == "OBJECT" and "properties" in result:
-            result["additionalProperties"] = False
-            result["required"] = list(result["properties"])
         return result
 
     return convert(schema)
