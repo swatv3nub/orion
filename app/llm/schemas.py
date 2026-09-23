@@ -7,10 +7,10 @@ from pydantic import BaseModel, Field
 
 class AnalystHypothesis(BaseModel):
     id: str
-    statement: str = Field(max_length=240)
-    evidence_refs: list[str] = Field(min_length=1)
+    statement: str = Field(max_length=160)
+    evidence_refs: list[str] = Field(min_length=1, max_length=4)
     confidence: float = Field(ge=0.0, le=1.0)
-    supporting_evidence: list[str] = Field(default_factory=list)
+    supporting_evidence: list[str] = Field(default_factory=list, max_length=4)
     contradicting_evidence: list[str] = Field(default_factory=list)
     status: Literal["supported", "partially_supported", "unresolved", "contradicted"]
 
@@ -24,14 +24,14 @@ class AnalystAssessment(BaseModel):
     classification: Literal["benign", "needs_investigation", "suspicious", "confirmed"]
     severity: Literal["informational", "low", "medium", "high", "critical"]
     confidence: float = Field(ge=0.0, le=1.0)
-    summary: str = Field(max_length=400)
+    summary: str = Field(max_length=240)
     summary_evidence_refs: list[str] = Field(min_length=1)
     factual_claims: list[AnalystClaim] = Field(default_factory=list)
-    hypotheses: list[AnalystHypothesis] = Field(default_factory=list)
+    hypotheses: list[AnalystHypothesis] = Field(default_factory=list, max_length=3)
     supporting_evidence: list[str] = Field(default_factory=list)
     contradicting_evidence: list[str] = Field(default_factory=list)
-    unresolved_questions: list[str] = Field(default_factory=list)
-    recommended_next_steps: list[Annotated[str, Field(max_length=160)]] = Field(default_factory=list, max_length=5)
+    unresolved_questions: list[Annotated[str, Field(max_length=120)]] = Field(default_factory=list, max_length=3)
+    recommended_next_steps: list[Annotated[str, Field(max_length=120)]] = Field(default_factory=list, max_length=3)
     human_review_required: bool
     automated_action: Literal["none"]
 

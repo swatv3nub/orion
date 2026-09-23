@@ -104,14 +104,39 @@ def test_openrouter_accepts_compact_single_object_output():
 def test_assessment_output_lengths_are_bounded():
     value = assessment().model_dump()
     with pytest.raises(ValidationError):
-        AnalystAssessment.model_validate({**value, "summary": "x" * 401})
-    hypothesis = {**value["hypotheses"][0], "statement": "x" * 241}
+        AnalystAssessment.model_validate({**value, "summary": "x" * 241})
+    hypothesis = {**value["hypotheses"][0], "statement": "x" * 161}
     with pytest.raises(ValidationError):
         AnalystAssessment.model_validate({**value, "hypotheses": [hypothesis]})
     with pytest.raises(ValidationError):
         AnalystAssessment.model_validate({
             **value,
-            "recommended_next_steps": ["x" * 161],
+            "hypotheses": [value["hypotheses"][0]] * 4,
+        })
+    with pytest.raises(ValidationError):
+        AnalystAssessment.model_validate({
+            **value,
+            "hypotheses": [{**value["hypotheses"][0], "supporting_evidence": ["E-1"] * 5}],
+        })
+    with pytest.raises(ValidationError):
+        AnalystAssessment.model_validate({
+            **value,
+            "recommended_next_steps": ["Review access controls."] * 4,
+        })
+    with pytest.raises(ValidationError):
+        AnalystAssessment.model_validate({
+            **value,
+            "recommended_next_steps": ["x" * 121],
+        })
+    with pytest.raises(ValidationError):
+        AnalystAssessment.model_validate({
+            **value,
+            "unresolved_questions": ["x" * 121],
+        })
+    with pytest.raises(ValidationError):
+        AnalystAssessment.model_validate({
+            **value,
+            "unresolved_questions": ["Open question?"] * 4,
         })
 
 
@@ -142,6 +167,20 @@ def test_truncated_output_fails_closed(caplog):
 
     assert error.value.code == "llm_invalid_output"
     assert "truncated output" in caplog.records[-1].message
+
+
+def test_truncated_output_preserves_deterministic_fallback():
+    reasoner = OpenRouterReasoner(
+        Settings(openrouter_api_key="test", openrouter_model="configured"),
+        FakeClient(raw_response('{"classification":"needs_investigation"', finish_reason="length")),
+    )
+    report = InvestigationService(
+        settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=reasoner
+    ).investigate(request())
+
+    assert report.llm_assessment is None
+    assert report.llm_failure_reason == "llm_invalid_output"
+    assert report.final_assessment == report.deterministic_assessment
 
 
 def test_missing_choices_fail_as_invalid_output():
