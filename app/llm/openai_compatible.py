@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAICompatibleReasoner(LLMReasoner):
-    def __init__(self, provider: str, api_key: str, base_url: str, model: str, connect_timeout: float, read_timeout: float, max_input_bytes: int, max_output_tokens: int, client: Any | None = None) -> None:
+    def __init__(self, provider: str, api_key: str, base_url: str, model: str, connect_timeout: float, read_timeout: float, max_input_bytes: int, max_output_tokens: int, client: Any | None = None, reasoning_effort: str | None = None, use_max_completion_tokens: bool = False) -> None:
         self.provider = provider
         self.api_key = api_key
         self.base_url = base_url
@@ -26,18 +26,23 @@ class OpenAICompatibleReasoner(LLMReasoner):
         self.max_input_bytes = max_input_bytes
         self.max_output_tokens = max_output_tokens
         self.client = client
+        self.reasoning_effort = reasoning_effort
+        self.use_max_completion_tokens = use_max_completion_tokens
 
     def analyze(self, alert: ThreatLensAlert, evidence: list[Evidence], hypotheses: list[Hypothesis], missing_evidence: list[str], tool_activity: list[ToolActivity]) -> AnalystAssessment:
         if not self.api_key or not self.model:
             raise LLMError("llm_error", "LLM provider is not configured")
         contents = llm_input(alert, evidence, hypotheses, missing_evidence, tool_activity, self.max_input_bytes)
         try:
-            response = self._client().chat.completions.create(
+            request = dict(
                 model=self.model,
                 messages=[{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": contents}],
                 response_format={"type": "json_schema", "json_schema": {"name": "analyst_assessment", "strict": True, "schema": strict_schema(AnalystAssessment.model_json_schema())}},
-                max_tokens=self.max_output_tokens,
             )
+            request["max_completion_tokens" if self.use_max_completion_tokens else "max_tokens"] = self.max_output_tokens
+            if self.reasoning_effort:
+                request["reasoning_effort"] = self.reasoning_effort
+            response = self._client().chat.completions.create(**request)
         except LLMError:
             raise
         except Exception as exc:

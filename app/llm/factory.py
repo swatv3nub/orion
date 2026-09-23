@@ -1,6 +1,6 @@
 from app.config import Settings
 from app.llm.base import LLMError, LLMReasoner
-from app.llm.groq import GroqReasoner
+from app.llm.openai import OpenAIReasoner
 from app.llm.openrouter import OpenRouterReasoner
 
 
@@ -39,8 +39,7 @@ class FallbackReasoner(LLMReasoner):
 
 
 def create_reasoner(settings: Settings) -> LLMReasoner | None:
-    if settings.llm_provider == "openrouter":
-        return OpenRouterReasoner(settings) if settings.openrouter_api_key and settings.openrouter_model else None
-    if settings.llm_provider == "groq" and settings.groq_api_key:
-        return FallbackReasoner(GroqReasoner(settings), OpenRouterReasoner(settings) if settings.openrouter_api_key and settings.openrouter_model else None)
-    return None
+    if settings.llm_provider != "openai" or not settings.openai_api_key or not settings.openai_model:
+        return None
+    fallback = OpenRouterReasoner(settings) if settings.openrouter_api_key and settings.openrouter_model else None
+    return FallbackReasoner(OpenAIReasoner(settings), fallback)

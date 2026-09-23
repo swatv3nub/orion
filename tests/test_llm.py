@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.llm.base import LLMError, LLMReasoner, llm_input
 from app.llm.factory import FallbackReasoner, create_reasoner
-from app.llm.groq import GroqReasoner
+from app.llm.openai import OpenAIReasoner
 from app.llm.openrouter import OpenRouterReasoner
 from app.llm.schemas import AnalystAssessment, validate_assessment
 from app.models import Evidence
@@ -73,14 +73,18 @@ class FakeReasoner(LLMReasoner):
         return outcome
 
 
-def test_groq_and_openrouter_return_the_same_structured_assessment():
+def test_openai_and_openrouter_return_the_same_structured_assessment():
     for reasoner in (
-        GroqReasoner(Settings(groq_api_key="test"), FakeClient(response(assessment()))),
+        OpenAIReasoner(Settings(openai_api_key="test"), FakeClient(response(assessment()))),
         OpenRouterReasoner(Settings(openrouter_api_key="test", openrouter_model="configured"), FakeClient(response(assessment()))),
     ):
         result = reasoner.analyze(request(), [Evidence(id="E-1", source="test", type="observation", finding="x", confidence=1, raw_reference="x")], [], [], [])
         assert result.automated_action == "none"
         assert reasoner.client.called["response_format"]["json_schema"]["strict"]
+        if reasoner.provider == "openai":
+            assert reasoner.client.called["reasoning_effort"] == "low"
+            assert reasoner.client.called["max_completion_tokens"] == Settings().llm_max_output_tokens
+            assert "max_tokens" not in reasoner.client.called
 
 
 def test_openrouter_accepts_compact_single_object_output():
@@ -140,17 +144,19 @@ def test_assessment_output_lengths_are_bounded():
         })
 
 
-def test_openrouter_is_the_default_configured_provider(monkeypatch):
+def test_openai_is_the_default_configured_provider(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
     settings = Settings.from_env()
-    assert settings.llm_provider == "openrouter"
+    assert settings.llm_provider == "openai"
+    assert settings.openai_model == "gpt-6-luna"
     assert settings.openrouter_model == "nvidia/nemotron-3-super-120b-a12b:free"
 
 
 @pytest.mark.parametrize("content", ["", "{}", "not json", '{{"classification":"needs_investigation"}}', '{"classification":"benign"}', "[]", None])
 def test_invalid_structured_responses_fail_closed(content):
-    reasoner = GroqReasoner(Settings(groq_api_key="test"), FakeClient(raw_response(content)))
+    reasoner = OpenAIReasoner(Settings(openai_api_key="test"), FakeClient(raw_response(content)))
     with pytest.raises(LLMError) as error:
         reasoner.analyze(request(), [], [], [], [])
     assert error.value.code == "llm_invalid_output"
@@ -186,7 +192,7 @@ def test_truncated_output_preserves_deterministic_fallback():
 def test_missing_choices_fail_as_invalid_output():
     client = FakeClient(type("Response", (), {"choices": []})())
     with pytest.raises(LLMError) as error:
-        GroqReasoner(Settings(groq_api_key="test"), client).analyze(request(), [], [], [], [])
+        OpenAIReasoner(Settings(openai_api_key="test"), client).analyze(request(), [], [], [], [])
     assert error.value.code == "llm_invalid_output"
 
 
@@ -226,12 +232,12 @@ def test_invalid_output_diagnostic_logs_only_the_first_1000_content_characters(c
 def test_input_limit_is_enforced_before_provider_request():
     size = len(llm_input(request(), [], [], [], [], 1_000_000).encode())
     client = FakeClient(response(assessment()))
-    reasoner = GroqReasoner(Settings(groq_api_key="test", llm_max_input_bytes=size), client)
+    reasoner = OpenAIReasoner(Settings(openai_api_key="test", llm_max_input_bytes=size), client)
     assert isinstance(reasoner.analyze(request(), [], [], [], []), AnalystAssessment)
     assert client.calls == 1
 
     client = FakeClient(response(assessment()))
-    reasoner = GroqReasoner(Settings(groq_api_key="test", llm_max_input_bytes=size - 1), client)
+    reasoner = OpenAIReasoner(Settings(openai_api_key="test", llm_max_input_bytes=size - 1), client)
     with pytest.raises(LLMError) as error:
         reasoner.analyze(request(), [], [], [], [])
     assert error.value.code == "llm_error"
@@ -240,7 +246,7 @@ def test_input_limit_is_enforced_before_provider_request():
 
 def test_configured_openrouter_pinned_model_is_used_for_fallback():
     pinned = "nvidia/nemotron-3-super-120b-a12b:free"
-    reasoner = create_reasoner(Settings(llm_provider="groq", groq_api_key="test", openrouter_api_key="test", openrouter_model=pinned))
+    reasoner = create_reasoner(Settings(openai_api_key="test", openrouter_api_key="test", openrouter_model=pinned))
     assert isinstance(reasoner, FallbackReasoner)
     reasoner.primary.client = FakeClient(error=ProviderError(503))
     reasoner.fallback.client = FakeClient(response(assessment()))
@@ -252,16 +258,16 @@ def test_configured_openrouter_pinned_model_is_used_for_fallback():
 
 
 @pytest.mark.parametrize("status, code", [(429, "llm_quota_exhausted"), (503, "llm_unavailable")])
-def test_groq_http_errors_are_classified(status, code):
-    reasoner = GroqReasoner(Settings(groq_api_key="test"), FakeClient(error=ProviderError(status)))
+def test_openai_http_errors_are_classified(status, code):
+    reasoner = OpenAIReasoner(Settings(openai_api_key="test"), FakeClient(error=ProviderError(status)))
     with pytest.raises(LLMError) as error:
         reasoner.analyze(request(), [], [], [], [])
     assert error.value.code == code and error.value.transient
 
 
 @pytest.mark.parametrize("error", [ProviderError(429), ProviderError(503), TimeoutError()])
-def test_transient_groq_failure_retries_once_then_falls_back(error):
-    primary = FakeReasoner("groq", "primary", [LLMError("llm_quota_exhausted", transient=True) if isinstance(error, ProviderError) and error.status_code == 429 else LLMError("llm_unavailable" if isinstance(error, ProviderError) else "llm_timeout", transient=True), LLMError("llm_unavailable", transient=True)])
+def test_transient_openai_failure_retries_once_then_falls_back(error):
+    primary = FakeReasoner("openai", "primary", [LLMError("llm_quota_exhausted", transient=True) if isinstance(error, ProviderError) and error.status_code == 429 else LLMError("llm_unavailable" if isinstance(error, ProviderError) else "llm_timeout", transient=True), LLMError("llm_unavailable", transient=True)])
     fallback = FakeReasoner("openrouter", "fallback", [assessment()])
     reasoner = FallbackReasoner(primary, fallback)
     assert reasoner.analyze(None, [], [], [], []).automated_action == "none"
@@ -271,7 +277,7 @@ def test_transient_groq_failure_retries_once_then_falls_back(error):
 
 
 def test_invalid_output_and_validation_failures_do_not_fallback():
-    primary = FakeReasoner("groq", "primary", [LLMError("llm_invalid_output")])
+    primary = FakeReasoner("openai", "primary", [LLMError("llm_invalid_output")])
     fallback = FakeReasoner("openrouter", "fallback", [assessment()])
     with pytest.raises(LLMError):
         FallbackReasoner(primary, fallback).analyze(None, [], [], [], [])
@@ -281,8 +287,8 @@ def test_invalid_output_and_validation_failures_do_not_fallback():
         validate_assessment(invalid, {"E-1"}, {"H-001"}, [])
 
 
-def test_invalid_groq_response_does_not_trigger_openrouter():
-    reasoner = create_reasoner(Settings(llm_provider="groq", groq_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
+def test_invalid_openai_response_does_not_trigger_openrouter():
+    reasoner = create_reasoner(Settings(openai_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
     reasoner.primary.client = FakeClient(raw_response("{}"))
     reasoner.fallback.client = FakeClient(response(assessment()))
     with pytest.raises(LLMError) as error:
@@ -293,7 +299,7 @@ def test_invalid_groq_response_does_not_trigger_openrouter():
 
 
 def test_non_transient_primary_failure_does_not_call_openrouter():
-    reasoner = create_reasoner(Settings(llm_provider="groq", groq_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
+    reasoner = create_reasoner(Settings(openai_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
     reasoner.primary.client = FakeClient(error=ProviderError(400))
     reasoner.fallback.client = FakeClient(response(assessment()))
     with pytest.raises(LLMError) as error:
@@ -301,21 +307,21 @@ def test_non_transient_primary_failure_does_not_call_openrouter():
     assert error.value.code == "llm_error"
     assert reasoner.primary.client.calls == 1
     assert reasoner.fallback.client.calls == 0
-    assert reasoner.provider == "groq" and not reasoner.fallback_used
+    assert reasoner.provider == "openai" and not reasoner.fallback_used
 
 
 def test_reused_reasoner_reports_primary_after_fallback():
-    primary = FakeReasoner("groq", "primary", [LLMError("llm_timeout", transient=True), LLMError("llm_timeout", transient=True), assessment()])
+    primary = FakeReasoner("openai", "primary", [LLMError("llm_timeout", transient=True), LLMError("llm_timeout", transient=True), assessment()])
     fallback = FakeReasoner("openrouter", "pinned/model", [assessment()])
     reasoner = FallbackReasoner(primary, fallback)
     reasoner.analyze(None, [], [], [], [])
     assert reasoner.provider == "openrouter" and reasoner.fallback_used
     reasoner.analyze(None, [], [], [], [])
-    assert (reasoner.provider, reasoner.model, reasoner.fallback_used, reasoner.primary_failure_reason) == ("groq", "primary", False, None)
+    assert (reasoner.provider, reasoner.model, reasoner.fallback_used, reasoner.primary_failure_reason) == ("openai", "primary", False, None)
 
 
 def test_validation_failure_does_not_invoke_fallback_provider():
-    primary = FakeReasoner("groq", "primary", [assessment("unknown")])
+    primary = FakeReasoner("openai", "primary", [assessment("unknown")])
     fallback = FakeReasoner("openrouter", "fallback", [assessment()])
     report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=FallbackReasoner(primary, fallback)).investigate(request())
     assert report.llm_failure_reason == "llm_validation_failed"
@@ -358,7 +364,7 @@ def test_unknown_hypothesis_missing_review_and_automated_action_are_rejected():
 
 
 def test_both_provider_failures_preserve_deterministic_report():
-    primary = FakeReasoner("groq", "primary", [LLMError("llm_unavailable", transient=True), LLMError("llm_unavailable", transient=True)])
+    primary = FakeReasoner("openai", "primary", [LLMError("llm_unavailable", transient=True), LLMError("llm_unavailable", transient=True)])
     fallback = FakeReasoner("openrouter", "fallback", [LLMError("llm_unavailable", transient=True)])
     report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=FallbackReasoner(primary, fallback)).investigate(request())
     assert report.state.status == "partial"
@@ -372,12 +378,12 @@ def test_both_provider_failures_preserve_deterministic_report():
 
 
 def test_successful_provider_metadata_and_validation_failure_are_reported():
-    success = FakeReasoner("groq", "openai/gpt-oss-120b", [lambda alert, evidence, hypotheses, missing, activity: assessment(evidence[0].id, hypotheses[0].id)])
+    success = FakeReasoner("openai", "gpt-6-luna", [lambda alert, evidence, hypotheses, missing, activity: assessment(evidence[0].id, hypotheses[0].id)])
     report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=success).investigate(request())
     assert report.llm_status == "success"
-    assert report.llm_provider == "groq"
-    assert report.llm_model == "openai/gpt-oss-120b"
-    invalid = FakeReasoner("groq", "primary", [assessment("unknown")])
+    assert report.llm_provider == "openai"
+    assert report.llm_model == "gpt-6-luna"
+    invalid = FakeReasoner("openai", "primary", [assessment("unknown")])
     report = InvestigationService(settings=Settings(), registry=ToolRegistry(tools=[FakeThreatLens()]), llm_reasoner=invalid).investigate(request())
     assert report.llm_failure_reason == "llm_validation_failed"
     assert report.llm_assessment is None
