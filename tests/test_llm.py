@@ -104,6 +104,39 @@ def test_missing_choices_fail_as_invalid_output():
     assert error.value.code == "llm_invalid_output"
 
 
+@pytest.mark.parametrize(
+    ("response_value", "diagnostic"),
+    [
+        (raw_response(""), "empty content"),
+        (raw_response("not json"), "invalid JSON"),
+        (raw_response("{}"), "schema validation failure"),
+        (type("Response", (), {"choices": [type("Choice", (), {"message": type("Message", (), {"content": None, "refusal": "declined"})(), "finish_reason": "stop"})()]})(), "provider refusal"),
+        (type("Response", (), {"choices": []})(), "unexpected response structure"),
+    ],
+)
+def test_invalid_output_diagnostics_are_bounded_and_categorized(caplog, response_value, diagnostic):
+    reasoner = OpenRouterReasoner(Settings(openrouter_api_key="test", openrouter_model="configured"), FakeClient(response_value))
+    with pytest.raises(LLMError):
+        reasoner.analyze(request(), [], [], [], [])
+
+    record = caplog.records[-1]
+    assert diagnostic in record.message
+    assert "provider=openrouter model=configured" in record.message
+    assert "response_format=json_schema" in record.message
+
+
+def test_invalid_output_diagnostic_logs_only_the_first_1000_content_characters(caplog):
+    content = "x" * 1001
+    reasoner = OpenRouterReasoner(Settings(openrouter_api_key="test", openrouter_model="configured"), FakeClient(raw_response(content)))
+    with pytest.raises(LLMError):
+        reasoner.analyze(request(), [], [], [], [])
+
+    record = caplog.records[-1]
+    assert "content_length=1001" in record.message
+    assert content[:1000] in record.message
+    assert content not in record.message
+
+
 def test_input_limit_is_enforced_before_provider_request():
     size = len(llm_input(request(), [], [], [], [], 1_000_000).encode())
     client = FakeClient(response(assessment()))

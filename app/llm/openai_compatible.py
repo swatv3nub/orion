@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
+
+from pydantic import ValidationError
 
 from app.llm.base import LLMError, LLMReasoner, llm_input
 from app.llm.schemas import AnalystAssessment
@@ -9,6 +12,8 @@ from app.models import Evidence, Hypothesis, ThreatLensAlert, ToolActivity
 
 
 SYSTEM_PROMPT = """You are an analyst-assistance component inside ORION. Analyze only supplied alert, verified evidence, hypotheses, missing evidence, and tool activity. Do not invent facts, evidence, network activity, IP ownership, authentication state, identities, asset criticality, vulnerability, exploitation, historical activity, MITRE techniques, or remediation. Every factual summary, claim, and hypothesis statement must cite supplied evidence IDs. State when evidence is insufficient. Recommended next steps must be actions or questions, not factual claims. Unresolved questions are not facts. Human review is required when evidence is insufficient. automated_action must be none."""
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAICompatibleReasoner(LLMReasoner):
@@ -37,10 +42,56 @@ class OpenAICompatibleReasoner(LLMReasoner):
             raise
         except Exception as exc:
             raise self._error(exc) from exc
+        response_format_mode = "json_schema"
         try:
-            return AnalystAssessment.model_validate(json.loads(response.choices[0].message.content))
-        except (ValueError, TypeError, AttributeError, IndexError, KeyError) as exc:
+            choice = response.choices[0]
+            message = choice.message
+            content = message.content
+            finish_reason = getattr(choice, "finish_reason", None)
+        except (TypeError, AttributeError, IndexError, KeyError) as exc:
+            self._log_invalid_output("unexpected response structure", None, None, response_format_mode, exc)
             raise LLMError("llm_invalid_output") from exc
+
+        if getattr(message, "refusal", None):
+            exc = ValueError("Provider returned a refusal")
+            self._log_invalid_output("provider refusal", content, finish_reason, response_format_mode, exc)
+            raise LLMError("llm_invalid_output") from exc
+        if content is None or (isinstance(content, str) and not content.strip()):
+            exc = ValueError("Provider returned empty content")
+            self._log_invalid_output("empty content", content, finish_reason, response_format_mode, exc)
+            raise LLMError("llm_invalid_output") from exc
+        if not isinstance(content, str):
+            exc = TypeError("Provider response content is not a string")
+            self._log_invalid_output("unexpected response structure", None, finish_reason, response_format_mode, exc)
+            raise LLMError("llm_invalid_output") from exc
+        try:
+            parsed = json.loads(content)
+        except (json.JSONDecodeError, TypeError) as exc:
+            self._log_invalid_output("invalid JSON", content, finish_reason, response_format_mode, exc)
+            raise LLMError("llm_invalid_output") from exc
+        try:
+            return AnalystAssessment.model_validate(parsed)
+        except ValidationError as exc:
+            self._log_invalid_output("schema validation failure", content, finish_reason, response_format_mode, exc)
+            raise LLMError("llm_invalid_output") from exc
+
+    def _log_invalid_output(self, failure: str, content: str | None, finish_reason: Any, response_format_mode: str, exc: Exception) -> None:
+        """Log bounded response diagnostics without recording request data or full output."""
+        content_preview = content[:1000] if isinstance(content, str) else None
+        exception_message = str(exc)[:1000]
+        logger.warning(
+            "LLM response %s provider=%s model=%s finish_reason=%r content_length=%s "
+            "content_preview=%r response_format=%s exception_class=%s exception_message=%r",
+            failure,
+            self.provider,
+            self.model,
+            finish_reason,
+            len(content) if isinstance(content, str) else None,
+            content_preview,
+            response_format_mode,
+            type(exc).__name__,
+            exception_message,
+        )
 
     def _client(self) -> Any:
         if self.client is not None:
