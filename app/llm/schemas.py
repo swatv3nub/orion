@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
 
 class AnalystHypothesis(BaseModel):
     id: str
-    statement: str
+    statement: str = Field(max_length=240)
     evidence_refs: list[str] = Field(min_length=1)
     confidence: float = Field(ge=0.0, le=1.0)
     supporting_evidence: list[str] = Field(default_factory=list)
@@ -24,14 +24,14 @@ class AnalystAssessment(BaseModel):
     classification: Literal["benign", "needs_investigation", "suspicious", "confirmed"]
     severity: Literal["informational", "low", "medium", "high", "critical"]
     confidence: float = Field(ge=0.0, le=1.0)
-    summary: str
+    summary: str = Field(max_length=400)
     summary_evidence_refs: list[str] = Field(min_length=1)
     factual_claims: list[AnalystClaim] = Field(default_factory=list)
     hypotheses: list[AnalystHypothesis] = Field(default_factory=list)
     supporting_evidence: list[str] = Field(default_factory=list)
     contradicting_evidence: list[str] = Field(default_factory=list)
     unresolved_questions: list[str] = Field(default_factory=list)
-    recommended_next_steps: list[str] = Field(default_factory=list)
+    recommended_next_steps: list[Annotated[str, Field(max_length=160)]] = Field(default_factory=list, max_length=5)
     human_review_required: bool
     automated_action: Literal["none"]
 

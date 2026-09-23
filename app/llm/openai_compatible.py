@@ -11,7 +11,7 @@ from app.llm.schemas import AnalystAssessment
 from app.models import Evidence, Hypothesis, ThreatLensAlert, ToolActivity
 
 
-SYSTEM_PROMPT = """You are an analyst-assistance component inside ORION. Analyze only supplied alert, verified evidence, hypotheses, missing evidence, and tool activity. Do not invent facts, evidence, network activity, IP ownership, authentication state, identities, asset criticality, vulnerability, exploitation, historical activity, MITRE techniques, or remediation. Every factual summary, claim, and hypothesis statement must cite supplied evidence IDs. State when evidence is insufficient. Recommended next steps must be actions or questions, not factual claims. Unresolved questions are not facts. Human review is required when evidence is insufficient. automated_action must be none."""
+SYSTEM_PROMPT = """You are an analyst-assistance component inside ORION. Analyze only supplied alert, verified evidence, hypotheses, missing evidence, and tool activity. Return exactly one JSON object matching the schema, with one opening and closing brace; no preamble, markdown fences, or trailing text. Do not duplicate braces. Do not invent facts, evidence, network activity, IP ownership, authentication state, identities, asset criticality, vulnerability, exploitation, historical activity, MITRE techniques, or remediation. Every factual summary, claim, and hypothesis statement must cite supplied evidence IDs. Never repeat full evidence descriptions; cite evidence IDs only. Keep the summary concise (at most two sentences). Keep hypothesis statements under 240 characters and recommended next steps under 160 characters each, with at most five next steps. State when evidence is insufficient. Recommended next steps must be actions or questions, not factual claims. Unresolved questions are not facts. Human review is required when evidence is insufficient. automated_action must be none."""
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,10 @@ class OpenAICompatibleReasoner(LLMReasoner):
         if not isinstance(content, str):
             exc = TypeError("Provider response content is not a string")
             self._log_invalid_output("unexpected response structure", None, finish_reason, response_format_mode, exc)
+            raise LLMError("llm_invalid_output") from exc
+        if finish_reason == "length":
+            exc = ValueError("Provider output was truncated")
+            self._log_invalid_output("truncated output", content, finish_reason, response_format_mode, exc)
             raise LLMError("llm_invalid_output") from exc
         try:
             parsed = json.loads(content)

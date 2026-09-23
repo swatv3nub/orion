@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from app.config import Settings
 from app.llm.base import LLMError, LLMReasoner, llm_input
@@ -46,9 +47,10 @@ def response(value: AnalystAssessment):
     return raw_response(json.dumps(value.model_dump()))
 
 
-def raw_response(content):
+def raw_response(content, finish_reason=None):
     message = type("Message", (), {"content": content})()
-    return type("Response", (), {"choices": [type("Choice", (), {"message": message})()]})()
+    choice = type("Choice", (), {"message": message, "finish_reason": finish_reason})()
+    return type("Response", (), {"choices": [choice]})()
 
 
 class ProviderError(Exception):
@@ -81,6 +83,38 @@ def test_groq_and_openrouter_return_the_same_structured_assessment():
         assert reasoner.client.called["response_format"]["json_schema"]["strict"]
 
 
+def test_openrouter_accepts_compact_single_object_output():
+    content = (
+        '{"classification":"needs_investigation","severity":"low","confidence":0.4,'
+        '"summary":"Observed service requires review.","summary_evidence_refs":["E-1"],'
+        '"factual_claims":[],"hypotheses":[],"supporting_evidence":["E-1"],'
+        '"contradicting_evidence":[],"unresolved_questions":[],"recommended_next_steps":[],'
+        '"human_review_required":true,"automated_action":"none"}'
+    )
+    client = FakeClient(raw_response(content))
+    result = OpenRouterReasoner(
+        Settings(openrouter_api_key="test", openrouter_model="configured"), client
+    ).analyze(
+        request(), [Evidence(id="E-1", source="test", type="observation", finding="x", confidence=1, raw_reference="x")], [], [], []
+    )
+    assert result.summary == "Observed service requires review."
+    assert client.called["response_format"]["json_schema"]["strict"]
+
+
+def test_assessment_output_lengths_are_bounded():
+    value = assessment().model_dump()
+    with pytest.raises(ValidationError):
+        AnalystAssessment.model_validate({**value, "summary": "x" * 401})
+    hypothesis = {**value["hypotheses"][0], "statement": "x" * 241}
+    with pytest.raises(ValidationError):
+        AnalystAssessment.model_validate({**value, "hypotheses": [hypothesis]})
+    with pytest.raises(ValidationError):
+        AnalystAssessment.model_validate({
+            **value,
+            "recommended_next_steps": ["x" * 161],
+        })
+
+
 def test_openrouter_is_the_default_configured_provider(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
@@ -89,12 +123,25 @@ def test_openrouter_is_the_default_configured_provider(monkeypatch):
     assert settings.openrouter_model == "nvidia/nemotron-3-super-120b-a12b:free"
 
 
-@pytest.mark.parametrize("content", ["", "{}", "not json", '{"classification":"benign"}', "[]", None])
+@pytest.mark.parametrize("content", ["", "{}", "not json", '{{"classification":"needs_investigation"}}', '{"classification":"benign"}', "[]", None])
 def test_invalid_structured_responses_fail_closed(content):
     reasoner = GroqReasoner(Settings(groq_api_key="test"), FakeClient(raw_response(content)))
     with pytest.raises(LLMError) as error:
         reasoner.analyze(request(), [], [], [], [])
     assert error.value.code == "llm_invalid_output"
+
+
+def test_truncated_output_fails_closed(caplog):
+    content = '{"classification":"needs_investigation"'
+    reasoner = OpenRouterReasoner(
+        Settings(openrouter_api_key="test", openrouter_model="configured"),
+        FakeClient(raw_response(content, finish_reason="length")),
+    )
+    with pytest.raises(LLMError) as error:
+        reasoner.analyze(request(), [], [], [], [])
+
+    assert error.value.code == "llm_invalid_output"
+    assert "truncated output" in caplog.records[-1].message
 
 
 def test_missing_choices_fail_as_invalid_output():
