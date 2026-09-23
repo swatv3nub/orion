@@ -6,12 +6,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from app.llm.base import LLMError, LLMReasoner, llm_input
+from app.llm.base import LLMError, LLMReasoner, SYSTEM_PROMPT, llm_input
 from app.llm.schemas import AnalystAssessment
 from app.models import Evidence, Hypothesis, ThreatLensAlert, ToolActivity
 
-
-SYSTEM_PROMPT = """You are an analyst-assistance component inside ORION. Analyze only supplied alert, verified evidence, hypotheses, missing evidence, and tool activity. Return exactly one JSON object matching the schema, with one opening and closing brace; no preamble, markdown, or trailing text. Strongly prefer the shortest valid response: omit nonessential claims, use empty arrays when no items are needed, and do not restate alert or evidence metadata supplied by ORION. Do not duplicate braces. Do not invent facts, evidence, network activity, IP ownership, authentication state, identities, asset criticality, vulnerability, exploitation, historical activity, MITRE techniques, or remediation. Every factual summary, claim, and hypothesis statement must cite supplied evidence IDs. Never repeat evidence descriptions; reference evidence IDs only. Keep the summary under 240 characters; return at most three hypotheses with statements under 160 characters and at most four supporting evidence IDs each; return at most three unresolved questions and three recommended next steps, each under 120 characters. State when evidence is insufficient. Recommended next steps must be actions or questions, not factual claims. Unresolved questions are not facts. Keep human_review_required explicit. automated_action must be none."""
 
 logger = logging.getLogger(__name__)
 

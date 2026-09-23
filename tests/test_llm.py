@@ -8,6 +8,7 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.llm.base import LLMError, LLMReasoner, llm_input
 from app.llm.factory import FallbackReasoner, create_reasoner
+from app.llm.gemini import GeminiReasoner
 from app.llm.openai import OpenAIReasoner
 from app.llm.openrouter import OpenRouterReasoner
 from app.llm.schemas import AnalystAssessment, validate_assessment
@@ -43,6 +44,21 @@ class FakeClient:
         return self.response
 
 
+class FakeGeminiClient:
+    def __init__(self, response=None, error: Exception | None = None):
+        self.response = response
+        self.error = error
+        self.called = None
+        self.calls = 0
+
+    def post(self, url, **kwargs):
+        self.called = {"url": url, **kwargs}
+        self.calls += 1
+        if self.error:
+            raise self.error
+        return self.response
+
+
 def response(value: AnalystAssessment):
     return raw_response(json.dumps(value.model_dump()))
 
@@ -51,6 +67,10 @@ def raw_response(content, finish_reason=None):
     message = type("Message", (), {"content": content})()
     choice = type("Choice", (), {"message": message, "finish_reason": finish_reason})()
     return type("Response", (), {"choices": [choice]})()
+
+
+def gemini_response(content, finish_reason="STOP"):
+    return {"candidates": [{"finishReason": finish_reason, "content": {"parts": [{"text": content}]}}]}
 
 
 class ProviderError(Exception):
@@ -85,6 +105,45 @@ def test_openai_and_openrouter_return_the_same_structured_assessment():
             assert reasoner.client.called["reasoning_effort"] == "low"
             assert reasoner.client.called["max_completion_tokens"] == Settings().llm_max_output_tokens
             assert "max_tokens" not in reasoner.client.called
+
+
+def test_gemini_returns_structured_assessment():
+    client = FakeGeminiClient(gemini_response(json.dumps(assessment().model_dump())))
+    result = GeminiReasoner(Settings(gemini_api_key="test"), client).analyze(
+        request(), [Evidence(id="E-1", source="test", type="observation", finding="x", confidence=1, raw_reference="x")], [], [], []
+    )
+    assert result.automated_action == "none"
+    assert client.called["json"]["systemInstruction"]
+    assert client.called["json"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert client.called["json"]["generationConfig"]["responseSchema"]["type"] == "OBJECT"
+    assert client.called["url"].endswith(":generateContent")
+
+
+@pytest.mark.parametrize("response", [
+    {"candidates": []},
+    {"candidates": [{"finishReason": "STOP"}]},
+    {"candidates": [{"finishReason": "STOP", "content": {"parts": [{}]}}]},
+])
+def test_gemini_missing_candidate_content_or_text_fails_closed(response):
+    with pytest.raises(LLMError) as error:
+        GeminiReasoner(Settings(gemini_api_key="test"), FakeGeminiClient(response)).analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_invalid_output"
+
+
+def test_gemini_empty_malformed_and_incomplete_output_fail_closed():
+    for response in (gemini_response(""), gemini_response("{"), gemini_response("{}", "MAX_TOKENS")):
+        with pytest.raises(LLMError) as error:
+            GeminiReasoner(Settings(gemini_api_key="test"), FakeGeminiClient(response)).analyze(request(), [], [], [], [])
+        assert error.value.code == "llm_invalid_output"
+
+
+def test_gemini_provider_errors_are_transient_and_do_not_log_keys(caplog):
+    secret = "gemini-secret"
+    with pytest.raises(LLMError) as error:
+        GeminiReasoner(Settings(gemini_api_key=secret), FakeGeminiClient(error=ProviderError(503))).analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_unavailable" and error.value.transient
+    assert secret not in str(error.value)
+    assert secret not in "\n".join(record.message for record in caplog.records)
 
 
 def test_openrouter_accepts_compact_single_object_output():
@@ -144,13 +203,14 @@ def test_assessment_output_lengths_are_bounded():
         })
 
 
-def test_openai_is_the_default_configured_provider(monkeypatch):
+def test_gemini_is_the_default_configured_provider(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
     settings = Settings.from_env()
-    assert settings.llm_provider == "openai"
-    assert settings.openai_model == "gpt-6-luna"
+    assert settings.llm_provider == "gemini"
+    assert settings.gemini_model == "gemini-3.5-flash-lite"
     assert settings.openrouter_model == "nvidia/nemotron-3-super-120b-a12b:free"
 
 
@@ -244,9 +304,9 @@ def test_input_limit_is_enforced_before_provider_request():
     assert client.calls == 0
 
 
-def test_configured_openrouter_pinned_model_is_used_for_fallback():
+def test_openai_falls_back_to_configured_openrouter_model():
     pinned = "nvidia/nemotron-3-super-120b-a12b:free"
-    reasoner = create_reasoner(Settings(openai_api_key="test", openrouter_api_key="test", openrouter_model=pinned))
+    reasoner = create_reasoner(Settings(llm_provider="openai", openai_api_key="test", openrouter_api_key="test", openrouter_model=pinned))
     assert isinstance(reasoner, FallbackReasoner)
     reasoner.primary.client = FakeClient(error=ProviderError(503))
     reasoner.fallback.client = FakeClient(response(assessment()))
@@ -255,6 +315,45 @@ def test_configured_openrouter_pinned_model_is_used_for_fallback():
     assert reasoner.primary.client.calls == 2
     assert reasoner.fallback.client.called["model"] == pinned
     assert (reasoner.provider, reasoner.model, reasoner.fallback_used, reasoner.primary_failure_reason) == ("openrouter", pinned, True, "llm_unavailable")
+
+
+def test_gemini_falls_back_to_openai():
+    reasoner = create_reasoner(Settings(llm_provider="gemini", gemini_api_key="test", openai_api_key="test"))
+    assert isinstance(reasoner, FallbackReasoner) and len(reasoner.fallbacks) == 1
+    reasoner.primary.client = FakeGeminiClient(error=ProviderError(503))
+    reasoner.fallbacks[0].client = FakeClient(response(assessment()))
+    assert isinstance(reasoner.analyze(request(), [], [], [], []), AnalystAssessment)
+    assert reasoner.primary.client.calls == 2
+    assert (reasoner.provider, reasoner.model, reasoner.fallback_used, reasoner.primary_failure_reason) == (
+        "openai", "gpt-6-luna", True, "llm_unavailable"
+    )
+
+
+def test_gemini_falls_back_through_openai_to_openrouter():
+    reasoner = create_reasoner(Settings(
+        llm_provider="gemini", gemini_api_key="test", openai_api_key="test",
+        openrouter_api_key="test", openrouter_model="pinned/model",
+    ))
+    assert isinstance(reasoner, FallbackReasoner) and len(reasoner.fallbacks) == 2
+    reasoner.primary.client = FakeGeminiClient(error=ProviderError(503))
+    reasoner.fallbacks[0].client = FakeClient(error=ProviderError(503))
+    reasoner.fallbacks[1].client = FakeClient(response(assessment()))
+    assert isinstance(reasoner.analyze(request(), [], [], [], []), AnalystAssessment)
+    assert reasoner.primary.client.calls == 2
+    assert reasoner.fallbacks[0].client.calls == 1
+    assert (reasoner.provider, reasoner.model, reasoner.fallback_used, reasoner.primary_failure_reason) == (
+        "openrouter", "pinned/model", True, "llm_unavailable"
+    )
+
+
+def test_openrouter_has_no_fallback():
+    reasoner = create_reasoner(Settings(llm_provider="openrouter", openrouter_api_key="test"))
+    assert isinstance(reasoner, OpenRouterReasoner)
+    reasoner.client = FakeClient(error=ProviderError(503))
+    with pytest.raises(LLMError) as error:
+        reasoner.analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_unavailable"
+    assert reasoner.client.calls == 1
 
 
 @pytest.mark.parametrize("status, code", [(429, "llm_quota_exhausted"), (503, "llm_unavailable")])
@@ -287,8 +386,18 @@ def test_invalid_output_and_validation_failures_do_not_fallback():
         validate_assessment(invalid, {"E-1"}, {"H-001"}, [])
 
 
+def test_invalid_gemini_output_does_not_trigger_openai():
+    reasoner = create_reasoner(Settings(llm_provider="gemini", gemini_api_key="test", openai_api_key="test"))
+    reasoner.primary.client = FakeGeminiClient(gemini_response("{"))
+    reasoner.fallback.client = FakeClient(response(assessment()))
+    with pytest.raises(LLMError) as error:
+        reasoner.analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_invalid_output"
+    assert reasoner.fallback.client.calls == 0
+
+
 def test_invalid_openai_response_does_not_trigger_openrouter():
-    reasoner = create_reasoner(Settings(openai_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
+    reasoner = create_reasoner(Settings(llm_provider="openai", openai_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
     reasoner.primary.client = FakeClient(raw_response("{}"))
     reasoner.fallback.client = FakeClient(response(assessment()))
     with pytest.raises(LLMError) as error:
@@ -299,7 +408,7 @@ def test_invalid_openai_response_does_not_trigger_openrouter():
 
 
 def test_non_transient_primary_failure_does_not_call_openrouter():
-    reasoner = create_reasoner(Settings(openai_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
+    reasoner = create_reasoner(Settings(llm_provider="openai", openai_api_key="test", openrouter_api_key="test", openrouter_model="pinned/model"))
     reasoner.primary.client = FakeClient(error=ProviderError(400))
     reasoner.fallback.client = FakeClient(response(assessment()))
     with pytest.raises(LLMError) as error:

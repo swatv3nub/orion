@@ -52,7 +52,7 @@ When a trusted `scan_id` is present, the existing read-only Reconix results tool
 
 ### Stage 5: LLM Analyst Assistance
 
-ORION optionally sends the already-collected investigation context to OpenAI for a structured analyst assessment. OpenAI `gpt-6-luna` is the default primary provider with low reasoning effort, one bounded retry, and OpenRouter/Nemotron fallback for transient failures. If both providers fail, ORION returns its deterministic report as `partial`.
+ORION optionally sends the already-collected investigation context to Gemini for a structured analyst assessment. Gemini `gemini-3.5-flash-lite` is the default provider, with OpenAI and then OpenRouter/Nemotron fallback for transient failures. OpenAI uses low reasoning effort. If all configured providers fail, ORION returns its deterministic report as `partial`.
 
 The LLM cannot select or execute tools, create evidence, start scans, remediate findings, or alter deterministic evidence, hypotheses, correlations, or classification. Every factual LLM claim and hypothesis statement must reference ORION evidence IDs; unknown evidence or hypothesis IDs reject the assessment. Human review remains required when evidence is missing and `automated_action` is always `none`.
 
@@ -99,9 +99,13 @@ MAX_INVESTIGATION_STEPS=5
 MAX_TOOL_CALLS=10
 MAX_RUNTIME_SECONDS=60
 
-LLM_PROVIDER=openai
+LLM_PROVIDER=gemini
 LLM_MAX_INPUT_BYTES=100000
 LLM_MAX_OUTPUT_TOKENS=2048
+
+GEMINI_API_KEY=
+GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
+GEMINI_MODEL=gemini-3.5-flash-lite
 
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
