@@ -6,3 +6,5 @@ venv/
 .env
 *.db
 *.sqlite3
+*.egg-info
+build/

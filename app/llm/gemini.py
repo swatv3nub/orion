@@ -108,6 +108,13 @@ class GeminiReasoner(LLMReasoner):
         return self._status_error(getattr(exc, "status_code", None))
 
     def _log_invalid_output(self, failure: str, text: str | None, finish_reason: Any, exc: Exception) -> None:
+        if isinstance(exc, ValidationError):
+            logger.warning(
+                "Gemini response %s provider=%s model=%s finish_reason=%r content_length=%s exception_class=%s validation_errors=%s",
+                failure, self.provider, self.model, finish_reason, len(text) if isinstance(text, str) else None, type(exc).__name__, exc.errors(),
+                extra={"validation_errors": exc.errors()},
+            )
+            return
         logger.warning(
             "Gemini response %s provider=%s model=%s finish_reason=%r content_length=%s exception_class=%s",
             failure, self.provider, self.model, finish_reason, len(text) if isinstance(text, str) else None, type(exc).__name__,
