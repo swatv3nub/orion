@@ -28,6 +28,7 @@ class FallbackReasoner(LLMReasoner):
                 self.fallback_used = True
                 if index == 0:
                     self.primary_failure_reason = exc.code
+                continue
         raise LLMError("llm_error")
 
     def _with_one_retry(self, reasoner: LLMReasoner, *args):

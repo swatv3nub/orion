@@ -329,6 +329,47 @@ def test_gemini_falls_back_to_openai():
     )
 
 
+def test_gemini_success_does_not_fallback():
+    reasoner = create_reasoner(Settings(
+        llm_provider="gemini", gemini_api_key="test", openai_api_key="test", openrouter_api_key="test",
+    ))
+    reasoner.primary.client = FakeGeminiClient(gemini_response(json.dumps(assessment().model_dump())))
+    reasoner.fallbacks[0].client = FakeClient(error=ProviderError(503))
+    reasoner.fallbacks[1].client = FakeClient(error=ProviderError(503))
+    assert isinstance(reasoner.analyze(request(), [], [], [], []), AnalystAssessment)
+    assert reasoner.provider == "gemini"
+    assert not reasoner.fallback_used and reasoner.primary_failure_reason is None
+    assert reasoner.fallbacks[0].client.calls == 0
+    assert reasoner.fallbacks[1].client.calls == 0
+
+
+def test_gemini_fallback_stops_after_openai_success():
+    reasoner = create_reasoner(Settings(
+        llm_provider="gemini", gemini_api_key="test", openai_api_key="test", openrouter_api_key="test",
+    ))
+    reasoner.primary.client = FakeGeminiClient(error=ProviderError(503))
+    reasoner.fallbacks[0].client = FakeClient(response(assessment()))
+    reasoner.fallbacks[1].client = FakeClient(error=ProviderError(503))
+    assert isinstance(reasoner.analyze(request(), [], [], [], []), AnalystAssessment)
+    assert reasoner.provider == "openai" and reasoner.fallback_used
+    assert reasoner.fallbacks[1].client.calls == 0
+
+
+def test_non_transient_gemini_failure_does_not_fallback():
+    reasoner = create_reasoner(Settings(
+        llm_provider="gemini", gemini_api_key="test", openai_api_key="test", openrouter_api_key="test",
+    ))
+    reasoner.primary.client = FakeGeminiClient(error=ProviderError(400))
+    reasoner.fallbacks[0].client = FakeClient(response(assessment()))
+    reasoner.fallbacks[1].client = FakeClient(response(assessment()))
+    with pytest.raises(LLMError) as error:
+        reasoner.analyze(request(), [], [], [], [])
+    assert error.value.code == "llm_error"
+    assert not reasoner.fallback_used
+    assert reasoner.fallbacks[0].client.calls == 0
+    assert reasoner.fallbacks[1].client.calls == 0
+
+
 def test_gemini_falls_back_through_openai_to_openrouter():
     reasoner = create_reasoner(Settings(
         llm_provider="gemini", gemini_api_key="test", openai_api_key="test",
