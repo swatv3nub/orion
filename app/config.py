@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 MAX_STEPS = 5
 MAX_CALLS = 10
@@ -10,6 +11,7 @@ MAX_RUNTIME = 60.0
 
 @dataclass(frozen=True)
 class Settings:
+    database_path: str = str(Path.home() / ".local" / "share" / "orion" / "orion.db")
     max_investigation_steps: int = MAX_STEPS
     max_tool_calls: int = MAX_CALLS
     max_runtime_seconds: float = MAX_RUNTIME
@@ -43,6 +45,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
+            database_path=os.getenv("ORION_DATABASE_PATH", str(Path.home() / ".local" / "share" / "orion" / "orion.db")),
             max_investigation_steps=min(max(_integer("MAX_INVESTIGATION_STEPS", MAX_STEPS), 0), MAX_STEPS),
             max_tool_calls=min(max(_integer("MAX_TOOL_CALLS", MAX_CALLS), 0), MAX_CALLS),
             max_runtime_seconds=min(max(_number("MAX_RUNTIME_SECONDS", MAX_RUNTIME), 0.1), MAX_RUNTIME),

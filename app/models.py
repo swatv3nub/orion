@@ -296,3 +296,24 @@ class InvestigationResponse(BaseModel):
     alert_id: str | None = None
     status: str = "completed"
     classification: Classification
+
+
+class InvestigationMetadata(BaseModel):
+    """Lightweight, durable investigation state exposed by the history API."""
+
+    investigation_id: str
+    alert_id: str | None = None
+    status: str
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    stop_reason: str | None = None
+    error: str | None = None
+    timeout: bool = False
+    created_at: datetime
+    updated_at: datetime
+
+
+class InvestigationListResponse(BaseModel):
+    investigations: list[InvestigationMetadata] = Field(default_factory=list)
+    limit: int
+    offset: int

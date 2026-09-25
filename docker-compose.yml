@@ -14,7 +14,12 @@ services:
       - "8000"
     networks:
       - reconix-cloud_default
+    volumes:
+      - orion_data:/app/data
 
 networks:
   reconix-cloud_default:
     external: true
+
+volumes:
+  orion_data:
