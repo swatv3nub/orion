@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.engine.graph import EvidenceGraph
 from app.models import AnalystReport, AssessmentConsistency, CorrelationResult, Evaluation, FinalAssessment, Hypothesis, InvestigationContext, InvestigationState, Severity, ToolActivity
 from app.engine.assessment import reconcile_assessment
+from app.engine.report_validation import validate_report_integrity
 from app.llm.schemas import AnalystAssessment, validate_assessment
 
 
@@ -22,7 +23,6 @@ class ReportGenerator:
                   deterministic_assessment: FinalAssessment | None = None,
                   final_assessment: FinalAssessment | None = None,
                   assessment_consistency: AssessmentConsistency | None = None) -> AnalystReport:
-        title = context.primary_alert.finding.title
         validated_llm_assessment = None
         if llm_assessment is not None:
             # The service validates before calling the report generator. Retain this
@@ -42,13 +42,13 @@ class ReportGenerator:
                 context.primary_alert.finding.severity,
                 hypotheses,
             )
-        return AnalystReport(
+        report = AnalystReport(
             investigation_id=context.investigation_id,
             alert_id=context.primary_alert.alert_id,
             classification=evaluation.classification,
             severity=context.primary_alert.finding.severity,
             confidence=evaluation.confidence,
-            summary=self._summary(title, hypotheses, final_assessment),
+            summary=self._summary(final_assessment),
             hypotheses=hypotheses,
             evidence=context.evidence,
             evidence_relationships=correlation.relationships if correlation else [],
@@ -82,18 +82,18 @@ class ReportGenerator:
             stop_reason=state.stop_reason if state else None,
             state=state,
         )
+        return validate_report_integrity(report)
 
-    def _summary(self, title: str, hypotheses: list[Hypothesis], final_assessment: FinalAssessment) -> str:
+    def _summary(self, final_assessment: FinalAssessment) -> str:
         """Build a deterministic presentation summary from authoritative report data.
 
         This deliberately does not copy the LLM summary. The LLM's separately
         inspectable, evidence-validated summary remains in ``llm_assessment``.
         """
-        observation = hypotheses[0].description if hypotheses else f"{title} requires additional investigation."
         return (
             f"Final assessment: {final_assessment.classification} "
             f"({final_assessment.severity}, confidence {final_assessment.confidence:.2f}). "
-            f"{observation}"
+            "Review the evidence, hypotheses, and missing evidence in this report."
         )
 
     def _steps(self, missing: list[str]) -> list[str]:

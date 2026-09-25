@@ -11,6 +11,7 @@ from typing import Protocol
 from pydantic import ValidationError
 
 from app.engine.assessment import reconcile_assessment
+from app.engine.report_validation import validate_report_integrity
 from app.llm.schemas import AnalystAssessment, validate_assessment
 from app.models import AnalystReport, Evaluation
 
@@ -224,10 +225,7 @@ class SQLiteInvestigationRepository:
     @staticmethod
     def _validate_report(report: AnalystReport) -> AnalystReport:
         """Reapply the report's domain and assessment safeguards on every load/save."""
-        if report.automated_action != "none":
-            raise ValueError("Persisted report requested an automated action")
-        if report.missing_evidence and not report.human_review_required:
-            raise ValueError("Persisted report removed required human review")
+        validate_report_integrity(report)
         assessment = None
         if report.llm_assessment is not None:
             assessment = validate_assessment(
