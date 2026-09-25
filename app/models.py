@@ -257,38 +257,38 @@ class AssessmentConsistency(BaseModel):
 class AnalystReport(BaseModel):
     investigation_id: str
     alert_id: str
-    classification: Classification
-    severity: Severity
-    confidence: float = Field(ge=0.0, le=1.0)
-    summary: str
-    hypotheses: list[Hypothesis]
-    evidence: list[Evidence]
+    classification: Classification = Field(description="Legacy deterministic classification. The authoritative outcome is final_assessment.")
+    severity: Severity = Field(description="Legacy deterministic finding severity. The authoritative outcome is final_assessment.")
+    confidence: float = Field(ge=0.0, le=1.0, description="Legacy deterministic confidence. The authoritative outcome is final_assessment.")
+    summary: str = Field(description="Deterministically constructed summary grounded in the reconciled final assessment and deterministic hypotheses.")
+    hypotheses: list[Hypothesis] = Field(description="Deterministic hypotheses generated from the investigation evidence; not LLM hypotheses.")
+    evidence: list[Evidence] = Field(description="Verified investigation evidence available for reference by a validated LLM assessment.")
     evidence_relationships: list[EvidenceRelation] = Field(default_factory=list)
     raw_evidence_count: int = Field(default=0, ge=0)
     canonical_evidence_count: int = Field(default=0, ge=0)
     correlated_evidence_count: int = Field(default=0, ge=0)
     semantic_relationship_count: int = Field(default=0, ge=0)
     provenance_relationship_count: int = Field(default=0, ge=0)
-    llm_assessment: dict[str, Any] | None = None
-    deterministic_assessment: FinalAssessment
-    final_assessment: FinalAssessment
-    assessment_consistency: AssessmentConsistency
-    llm_status: str | None = None
-    llm_model: str | None = None
-    llm_failure_reason: str | None = None
-    llm_provider: str | None = None
-    llm_fallback_used: bool = False
-    llm_primary_failure_reason: str | None = None
-    missing_evidence: list[str]
-    investigation_steps: list[str]
-    tool_activity: list[ToolActivity] = Field(default_factory=list)
+    llm_assessment: dict[str, Any] | None = Field(default=None, description="Validated LLM assessment, including its evidence-backed factual_claims, hypotheses, unresolved_questions, and recommended_next_steps. It is not authoritative.")
+    deterministic_assessment: FinalAssessment = Field(description="Assessment derived solely from deterministic investigation evaluation.")
+    final_assessment: FinalAssessment = Field(description="Authoritative final assessment after deterministic reconciliation of any validated LLM assessment.")
+    assessment_consistency: AssessmentConsistency = Field(description="Whether the LLM and deterministic assessments were consistent, reconciled, or invalid.")
+    llm_status: str | None = Field(default=None, description="LLM execution status: success, failed, or not_configured.")
+    llm_model: str | None = Field(default=None, description="Model that produced the LLM assessment or most recently failed.")
+    llm_failure_reason: str | None = Field(default=None, description="Controlled LLM failure reason when no validated assessment is available.")
+    llm_provider: str | None = Field(default=None, description="Provider that produced the LLM assessment or most recently failed.")
+    llm_fallback_used: bool = Field(default=False, description="Whether the configured LLM fallback chain produced the result.")
+    llm_primary_failure_reason: str | None = Field(default=None, description="Controlled primary-provider failure reason when a fallback was used.")
+    missing_evidence: list[str] = Field(description="Evidence required to resolve the deterministic assessment.")
+    investigation_steps: list[str] = Field(description="Deterministic actions generated from missing evidence.")
+    tool_activity: list[ToolActivity] = Field(default_factory=list, description="Executed investigation tool activity.")
     stop_reason: str | None = None
     state: InvestigationState | None = None
     mitre_attack: list[str]
-    recommended_actions: list[str]
-    uncertainties: list[str]
-    human_review_required: bool
-    automated_action: str = "none"
+    recommended_actions: list[str] = Field(description="Deterministic analyst actions. LLM recommended_next_steps, if any, remain in llm_assessment.")
+    uncertainties: list[str] = Field(description="Deterministic investigation uncertainties.")
+    human_review_required: bool = Field(description="Required when deterministic evaluation or missing evidence requires human security-context review.")
+    automated_action: str = Field(default="none", description="Always none; ORION does not automate remediation.")
 
 
 class InvestigationResponse(BaseModel):

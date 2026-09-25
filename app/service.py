@@ -92,19 +92,33 @@ class InvestigationService:
                 llm_fallback_used = self.llm_reasoner.fallback_used
                 llm_primary_failure_reason = self.llm_reasoner.primary_failure_reason
                 logger.warning("LLM assessment failed provider=%s model=%s reason=%s", llm_provider, llm_model, exc.code)
-            except ValueError:
+            except ValueError as exc:
                 assessment = None
                 if not state.timeout:
                     state.status, state.stop_reason, state.error = "partial", "llm_validation_failed", "llm_validation_failed"
                 evaluation.uncertainties.append("LLM assessment was unavailable or failed validation; deterministic analysis was preserved.")
                 llm_failure_reason = "llm_validation_failed"
-                logger.warning("LLM assessment failed reason=%s", llm_failure_reason)
+                llm_provider = self.llm_reasoner.provider
+                llm_model = self.llm_reasoner.model
+                llm_fallback_used = self.llm_reasoner.fallback_used
+                llm_primary_failure_reason = self.llm_reasoner.primary_failure_reason
+                logger.warning(
+                    "LLM assessment failed reason=%s exception=%s message=%r",
+                    llm_failure_reason,
+                    type(exc).__name__,
+                    str(exc),
+                    exc_info=True,
+                )
             except Exception:
                 assessment = None
                 if not state.timeout:
                     state.status, state.stop_reason, state.error = "partial", "llm_error", "llm_error"
                 evaluation.uncertainties.append("LLM assessment was unavailable or failed validation; deterministic analysis was preserved.")
                 llm_failure_reason = "llm_error"
+                llm_provider = self.llm_reasoner.provider
+                llm_model = self.llm_reasoner.model
+                llm_fallback_used = self.llm_reasoner.fallback_used
+                llm_primary_failure_reason = self.llm_reasoner.primary_failure_reason
                 logger.warning("LLM assessment failed reason=%s", llm_failure_reason)
         try:
             deterministic_assessment, final_assessment, consistency = reconcile_assessment(
